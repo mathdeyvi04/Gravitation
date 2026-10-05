@@ -3,6 +3,7 @@ from src.config import Configs
 from src.control.keyboard import Input
 from src.engine.renderer import Renderer
 from src.engine.clock import Clock
+from src.engine.camera import Camera2D
 import pygame
 
 class Application(ABC):
@@ -34,40 +35,36 @@ class Application(ABC):
             max_fixed_steps=config.max_fixed_steps,
         )
         self.renderer = Renderer(self.screen)
+        self.camera = Camera2D(
+            viewport_size=(config.width, config.height)
+        )
 
     def run(self) -> None:
         """Executa o loop principal até `stop()` ou quit ser solicitado.
 
-        Cada iteração: lê entradas, chama `update` com delta variável,
-        drena os passos fixos acumulados, limpa, chama `render` e
+        Cada iteração: mede o tempo, lê entradas, chama `update` com delta
+        variável, drena os passos fixos acumulados, limpa, chama `render` e
         apresenta. `shutdown()` é sempre chamado ao final, inclusive em
         exceção.
         """
-        # Bind a locais: evita lookups de atributo em cada iteração do loop.
-        input_ = self.input
-        time = self.time
-        renderer = self.renderer
-        background = self.config.background_color
-        update = self.update
-        fixed_update = self.fixed_update
-        render = self.render
-
         self.running = True
         try:
             while self.running:
-                input_.update()
-                if input_.quit_requested:
+
+                self.input.update()
+                if self.input.quit_requested:
                     break
 
-                update(time.delta_time)
+                self.update(self.time.delta_time)
 
-                while time.has_fixed_step():
-                    fixed_update(time.fixed_timestep)
-                    time.consume_fixed_step()
+                while self.time.has_fixed_step():
+                    self.fixed_update(self.time.fixed_timestep)
+                    self.time.consume_fixed_step()
 
-                renderer.clear(background)
-                render(renderer)
-                renderer.present()
+                self.renderer.clear(self.config.background_color)
+                self.render(self.renderer)
+                self.renderer.present()
+                self.time.update()
         finally:
             self.shutdown()
 

@@ -135,21 +135,6 @@ class Renderer:
         self.surface.blit(rendered, rect)
         return rect
 
-    # def draw_text_shadow(
-    #     self,
-    #     text: str,
-    #     position: Union[tuple[float, float], pygame.Vector2],
-    #     color: tuple[int, int, int] = (255, 255, 255),
-    #     *,
-    #     shadow_color: tuple[int, int, int] = (0, 0, 0),
-    #     offset: tuple[int, int] = (2, 2),
-    #     **kwargs,
-    # ) -> pygame.Rect:
-    #     """Desenha `text` com uma cópia deslocada por `offset` como sombra."""
-    #     shadow_pos = (position[0] + offset[0], position[1] + offset[1])
-    #     self.draw_text(text, shadow_pos, shadow_color, **kwargs)
-    #     return self.draw_text(text, position, color, **kwargs)
-
     def draw_rect(
         self,
         color: tuple[int, int, int],

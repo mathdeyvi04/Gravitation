@@ -7,7 +7,7 @@ class Configs:
 
     title: str = "Pygame Framework"
 
-    max_fps: int = 144
+    max_fps: int = 30
 
     # Frequência da atualização física.
     # 120 Hz é uma boa base para simulações.

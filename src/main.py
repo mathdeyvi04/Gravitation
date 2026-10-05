@@ -25,12 +25,12 @@ class SmokeApp(Application):
 
 def main() -> None:
     config = Configs(
-        width=800,
+        width=1000,
         height=600,
         title="Smoke Test",
-        background_color=(20, 20, 30),
+        background_color=(20, 50, 30),
         fixed_timestep=1.0 / 120.0,
-        max_fps=120,
+        max_fps=60,
         max_delta_time=0.25,
         max_fixed_steps=8,
     )
