@@ -38,6 +38,12 @@ class Camera2D:
         """
         return self.viewport_size * 0.5
 
+    def escalar_world_to_screen(self, world_dist: float):
+        return world_dist * self.zoom
+
+    def escalar_screen_to_world(self, screen_dist: float):
+        return screen_dist / self.zoom
+
     def world_to_screen(
         self,
         world_position: pygame.Vector2 | tuple[float, float],

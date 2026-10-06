@@ -52,8 +52,6 @@ class Background:
             self.background_color = background_color
             return
 
-        raise TypeError("Escolha somente uma forma de criação")
-
     @staticmethod
     def _build_canvas(
         tile: pygame.Surface,

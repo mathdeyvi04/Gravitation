@@ -29,7 +29,7 @@ class Application(ABC):
         pygame.display.set_caption(config.title)
 
         self.input = Input()
-        self.time = Clock(
+        self.clock = Clock(
             fixed_timestep=config.fixed_timestep,
             max_fps=config.max_fps,
             max_delta_time=config.max_delta_time,
@@ -56,22 +56,22 @@ class Application(ABC):
         self.running = True
         try:
             while self.running:
+                self.clock.update()
 
                 self.input.update()
                 if self.input.quit_requested:
                     break
 
-                self.update(self.time.delta_time)
+                self.update(self.clock.delta_time)
 
-                while self.time.has_fixed_step():
-                    self.fixed_update(self.time.fixed_timestep)
-                    self.time.consume_fixed_step()
+                while self.clock.has_fixed_step():
+                    self.fixed_update(self.clock.fixed_timestep)
+                    self.clock.consume_fixed_step()
 
                 self.background.update(self.camera.position)
                 self.background.draw(self.renderer)
                 self.render(self.renderer)
                 self.renderer.present()
-                self.time.update()
         finally:
             self.shutdown()
 

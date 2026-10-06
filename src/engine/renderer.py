@@ -29,6 +29,38 @@ class Renderer:
         self._text_cache_size = text_cache_size
         self._text_cache: OrderedDict[tuple, pygame.Surface] = OrderedDict()
 
+    def _render_text_surface(
+        self,
+        text: str,
+        font: pygame.font.Font,
+        color: tuple[int, int, int],
+        antialias: bool,
+        background: Optional[tuple[int, int, int]],
+        rotation: float,
+        cache_key: Optional[tuple],
+    ) -> pygame.Surface:
+        """Renderiza `text` com `font`, usando cache LRU quando aplicável."""
+        if cache_key is not None and self._text_cache_size > 0:
+            cache = self._text_cache
+            cached = cache.get(cache_key)
+            if cached is not None:
+                cache.move_to_end(cache_key)
+                return cached
+        else:
+            cache = None
+
+        surface = font.render(text, antialias, color, background)
+        if rotation:
+            surface = pygame.transform.rotate(surface, rotation)
+
+        if cache is not None:
+            cache[cache_key] = surface
+            if len(cache) > self._text_cache_size:
+                cache.popitem(last=False)
+        return surface
+
+    # -- Frame --------------------------------------------------------
+
     def clear(self, color: tuple[int, int, int] = (0, 0, 0)) -> None:
         """Preenche toda a superfície com `color`."""
         self.surface.fill(color)
@@ -36,6 +68,8 @@ class Renderer:
     def present(self) -> None:
         """Envia o buffer desenhado para a tela."""
         pygame.display.flip()
+
+    # -- Texto --------------------------------------------------------
 
     def get_font(
         self,
@@ -135,6 +169,8 @@ class Renderer:
         self.surface.blit(rendered, rect)
         return rect
 
+    # -- Formas -------------------------------------------------------
+
     def draw_rect(
         self,
         color: tuple[int, int, int],
@@ -176,32 +212,57 @@ class Renderer:
             width,
         )
 
-    def _render_text_surface(
+    def draw_arrow(
         self,
-        text: str,
-        font: pygame.font.Font,
         color: tuple[int, int, int],
-        antialias: bool,
-        background: Optional[tuple[int, int, int]],
-        rotation: float,
-        cache_key: Optional[tuple],
-    ) -> pygame.Surface:
-        """Renderiza `text` com `font`, usando cache LRU quando aplicável."""
-        if cache_key is not None and self._text_cache_size > 0:
-            cache = self._text_cache
-            cached = cache.get(cache_key)
-            if cached is not None:
-                cache.move_to_end(cache_key)
-                return cached
-        else:
-            cache = None
+        start: Union[tuple[float, float], pygame.Vector2],
+        end: Union[tuple[float, float], pygame.Vector2],
+        width: int = 2,
+        head_length: float = 10.0,
+    ) -> None:
+        """Desenha uma seta em screen_space."""
+        start = pygame.Vector2(start)
+        end = pygame.Vector2(end)
 
-        surface = font.render(text, antialias, color, background)
-        if rotation:
-            surface = pygame.transform.rotate(surface, rotation)
+        direction = end - start
 
-        if cache is not None:
-            cache[cache_key] = surface
-            if len(cache) > self._text_cache_size:
-                cache.popitem(last=False)
-        return surface
+        if direction.length_squared() <= 1e-12:
+            return
+
+        length = direction.length()
+        direction.scale_to_length(1.0)
+
+        head_length = min(head_length, length * 0.5)
+
+        left = end - direction.rotate(30) * head_length
+        right = end - direction.rotate(-30) * head_length
+
+        pygame.draw.line(
+            self.surface,
+            color,
+            (round(start.x), round(start.y)),
+            (round(end.x), round(end.y)),
+            width,
+        )
+
+        pygame.draw.polygon(
+            self.surface,
+            color,
+            [
+                (round(end.x), round(end.y)),
+                (round(left.x), round(left.y)),
+                (round(right.x), round(right.y)),
+            ],
+        )
+
+    def draw_polyline(
+            self,
+            color: tuple[int, int, int],
+            points: list[tuple[float, float]],
+            closed: bool = False,
+            width: int = 1,
+    ) -> None:
+        """Desenha uma sequência de segmentos conectados em screen_space."""
+        if len(points) < 2:
+            return
+        pygame.draw.lines(self.surface, color, closed, points, width)

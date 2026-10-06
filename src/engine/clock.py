@@ -104,14 +104,14 @@ class Clock:
 
     @property
     def fps(self) -> float:
-        """FPS médio medido pelo `pygame.time.Clock` interno."""
+        """FPS médio medido pelo `pygame.clock.Clock` interno."""
         return self._clock.get_fps()
 
     def reset(self) -> None:
         """Zera contadores e acumulador, preservando as configurações.
 
         Útil ao trocar de cena ou reiniciar uma simulação sem recriar o
-        objeto. Não reinicia o `pygame.time.Clock` interno.
+        objeto. Não reinicia o `pygame.clock.Clock` interno.
         """
         self.delta_time = 0.0
         self.total_time = 0.0

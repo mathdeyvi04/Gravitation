@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import pygame
 
-from src.engine.camera2d import Camera2D
+from src.engine.camera import Camera2D
 from src.engine.renderer import Renderer
 
 
@@ -44,16 +44,16 @@ class Entity(ABC):
 
     @abstractmethod
     def render(
-        self,
-        renderer: Renderer,
-        camera: Camera2D,
+            self,
+            renderer: Renderer,
+            camera: Camera2D,
+            alpha: float = 1.0,
     ) -> None:
-        """
-        Renderiza a entidade.
+        """Desenha a entidade.
 
-        `position`, dimensões e demais elementos relacionados ao objeto
-        devem ser considerados em world_space e transformados pela
-        câmera quando necessário.
+        `alpha` é o fator de interpolação em [0, 1) entre o estado físico
+        anterior e o atual, útil quando a taxa de frames difere da de
+        passos fixos. Subclasses que não interpolam podem ignorá-lo.
         """
 
     def destroy(self) -> None:
