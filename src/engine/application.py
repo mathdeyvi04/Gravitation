@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from src.config import Configs
 from src.control.keyboard import Input
+from src.engine.background import Background
 from src.engine.renderer import Renderer
 from src.engine.clock import Clock
 from src.engine.camera import Camera2D
@@ -38,6 +39,11 @@ class Application(ABC):
         self.camera = Camera2D(
             viewport_size=(config.width, config.height)
         )
+        self.background = Background(
+            path=config.background_path,
+            window_size=(config.width, config.height),
+            parallax=0.2
+        )
 
     def run(self) -> None:
         """Executa o loop principal até `stop()` ou quit ser solicitado.
@@ -61,7 +67,8 @@ class Application(ABC):
                     self.fixed_update(self.time.fixed_timestep)
                     self.time.consume_fixed_step()
 
-                self.renderer.clear(self.config.background_color)
+                self.background.update(self.camera.position)
+                self.background.draw(self.renderer)
                 self.render(self.renderer)
                 self.renderer.present()
                 self.time.update()

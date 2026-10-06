@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 @dataclass(frozen=True)
 class Configs:
@@ -13,6 +14,8 @@ class Configs:
     # 120 Hz é uma boa base para simulações.
     fixed_timestep: float = 1.0 / 120.0
 
+    background_path: Path = None
+
     # Evita que um congelamento grande faça o jogo
     # tentar processar milhares de atualizações.
     max_delta_time: float = 0.25
@@ -21,5 +24,3 @@ class Configs:
     max_fixed_steps: int = 8
 
     background_color: tuple[int, int, int] = (20, 20, 30)
-
-CONFIG = Configs()
