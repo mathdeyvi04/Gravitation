@@ -112,3 +112,30 @@ class Entity(ABC):
             return True
 
         return camera.is_world_bounds_visible(bounds)
+
+    def click_distance(
+            self,
+            world_position: pygame.Vector2,
+            alpha: float = 1.0,
+    ) -> float:
+        """Distância do ponto à superfície clicável da entidade.
+
+        Retorna `0.0` se o ponto está dentro da forma, valor positivo se
+        está fora, e `float("inf")` se a entidade não tem forma espacial
+        bem definida — nesse caso ela só responde a `hit_test` direto, não
+        à tolerância de clique.
+        """
+        return float("inf")
+
+    def render_selection(
+            self,
+            renderer: Renderer,
+            camera: Camera2D,
+            alpha: float = 1.0,
+    ) -> None:
+        """Desenha um realce visual indicando que a entidade está selecionada.
+
+        No-op por padrão. Subclasses com forma espacial sobrescrevem para
+        desenhar algo em volta (anel, caixa, contorno). A `Application`
+        chama este method no `render` quando a entidade é a selecionada.
+        """

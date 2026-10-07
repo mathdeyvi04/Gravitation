@@ -11,8 +11,7 @@ from src.engine.world import World
 from src.entities.massobject import MassObject
 from src.physics.gravity import NewtonianGravity
 from src.physics.rk4 import RK4Integrator
-from src.physics.semi_implicit_euler import SemiImplicitEulerIntegrator
-from src.engine.entity_picker import EntityPicker
+from src.entities.entity_picker import EntityPicker
 from src.engine.inspector import (
     Inspector,
     InspectorHUD,
@@ -140,7 +139,7 @@ class Gravitation(Application):
         ))
 
         G = self.sim_config.gravitational_constant
-        count = 20
+        count = 1
         for _ in range(count):
             r = random.uniform(80.0, 420.0)
             theta = random.uniform(0.0, 2.0 * math.pi)
@@ -148,8 +147,8 @@ class Gravitation(Application):
             px = cx + r * math.cos(theta)
             py = cy + r * math.sin(theta)
 
-            # speed = math.sqrt(G * central_mass / r)
-            speed = random.uniform(30, 80)
+            speed = math.sqrt(G * central_mass / r)
+            # speed = random.uniform(40, 90)
             vx = -speed * math.sin(theta)
             vy = speed * math.cos(theta)
 
@@ -274,6 +273,10 @@ class Gravitation(Application):
             self.camera,
             alpha,
         )
+
+        selected = self.inspector.selected
+        if selected is not None:
+            selected.render_selection(renderer, self.camera, alpha)
 
         # ------------------------------------------------------
         # Apresentação de HUD

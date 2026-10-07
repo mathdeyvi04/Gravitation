@@ -27,6 +27,8 @@ class MassObject(Entity):
         "previous_position",
     )
 
+    SELECTION_MARGIN = 6
+
     def __init__(
             self,
             config: SimulationConfig,
@@ -191,4 +193,49 @@ class MassObject(Entity):
         return (
                 position.distance_squared_to(world_position)
                 <= self.radius * self.radius
+        )
+
+    def click_distance(
+            self,
+            world_position: pygame.Vector2,
+            alpha: float = 1.0,
+    ) -> float:
+        """Distância do ponto à superfície do disco (0.0 se dentro).
+
+        Usa a posição interpolada, coerente com `hit_test` e `render`.
+        """
+        position = (
+            self.previous_position.lerp(self.position, alpha)
+            if alpha < 1.0
+            else self.position
+        )
+        return max(0.0, position.distance_to(world_position) - self.radius)
+
+    def render_selection(
+            self,
+            renderer: Renderer,
+            camera: Camera2D,
+            alpha: float = 1.0,
+    ) -> None:
+        """Desenha um anel branco ao redor do corpo quando selecionado.
+
+        O anel é posicionado na posição interpolada (mesma do `render`) e
+        tem um respiro de alguns pixels em relação à borda do disco, para
+        permanecer visível em qualquer zoom.
+        """
+        position = (
+            self.previous_position.lerp(self.position, alpha)
+            if alpha < 1.0
+            else self.position
+        )
+
+        center = camera.world_to_screen(position)
+        body_radius = camera.world_to_screen_size(self.radius)
+        ring_radius = body_radius + self.SELECTION_MARGIN
+
+        renderer.draw_circle(
+            (255, 255, 255),
+            center,
+            ring_radius,
+            width=2,
         )
