@@ -83,21 +83,27 @@ class NewtonianGravity:
         masses: list[float],
         ax: list[float],
         ay: list[float],
-    ) -> None:
-        """
-        Versão otimizada para a previsão de trajetória.
+        radii: list[float] | None = None,
+    ) -> bool:
+        """Versão otimizada para a previsão de trajetória.
 
         Trabalha diretamente com listas de floats para evitar a criação
-        de pygame.Vector2 dentro do laço quente.
+        de `pygame.Vector2` dentro do laço quente.
+
+        Se `radii` for fornecido, também verifica se algum par está dentro
+        do raio de colisão (`r_i + r_j`) e retorna `True` nesse caso. A
+        checagem é embutida no mesmo laço de pares da gravidade, então não
+        custa uma segunda varredura O(N²). Sem `radii`, retorna `False`.
         """
         count = len(masses)
-
         eps_sq = self.softening * self.softening
         gravitational_constant = self.gravitational_constant
 
         for i in range(count):
             ax[i] = 0.0
             ay[i] = 0.0
+
+        proximity = False
 
         for i in range(count):
             xi = px[i]
@@ -107,12 +113,14 @@ class NewtonianGravity:
             for j in range(i + 1, count):
                 dx = px[j] - xi
                 dy = py[j] - yi
+                raw_sq = dx * dx + dy * dy
 
-                distance_squared = (
-                    dx * dx +
-                    dy * dy +
-                    eps_sq
-                )
+                if radii is not None:
+                    threshold = radii[i] + radii[j]
+                    if raw_sq <= threshold * threshold:
+                        proximity = True
+
+                distance_squared = raw_sq + eps_sq
 
                 if distance_squared < 1e-12:
                     continue
@@ -128,3 +136,5 @@ class NewtonianGravity:
 
                 ax[j] -= dx * force_scale_j
                 ay[j] -= dy * force_scale_j
+
+        return proximity

@@ -63,13 +63,21 @@ class TrajectoryVisualizer:
         real da simulação é alterado. Devolve o tempo gasto na operação
         em segundos, ou `None` quando a visualização está desligada ou
         os parâmetros impedem a predição.
+
+        Culling: corpos fora da câmera continuam sendo integrados — a
+        gravidade deles afeta os demais — mas a trajetória deles não é
+        acumulada nem desenhada, o que economiza uma transformação de
+        tela e um par de floats por ponto por passo.
+
+        Parada em colisão: a predição interrompe no primeiro passo em que
+        qualquer par entra no raio de colisão. A simulação real funde os
+        corpos nesse ponto, então prever adiante seria fisicamente inútil
+        e visualmente confuso (as trajetórias se cruzariam).
         """
         if not self.enabled:
             return None
-
         if not bodies:
             return None
-
         if fixed_delta_time <= 0.0:
             return None
 
@@ -79,27 +87,35 @@ class TrajectoryVisualizer:
         steps = self.steps
         dt = fixed_delta_time
 
-        # Estado temporário em listas planas de floats. Evita alocações
-        # de `pygame.Vector2` dentro do laço quente.
+        # Estado temporário em listas planas de floats.
         px = [b.position.x for b in bodies]
         py = [b.position.y for b in bodies]
         vx = [b.velocity.x for b in bodies]
         vy = [b.velocity.y for b in bodies]
         masses = [b.mass for b in bodies]
+        radii = [b.radius for b in bodies]
 
-        # Buffers de aceleração preenchidos pelo gravitador a cada passo.
         ax = [0.0] * count
         ay = [0.0] * count
 
-        # Uma polilinha em screen_space por corpo. O primeiro ponto já
-        # entra aqui para que a integração a seguir só precise anexar.
-        paths: list[list[tuple[float, float]]] = []
+        # Uma polilinha por corpo visível. Corpos fora da câmera ficam com
+        # `None` e nunca acumulam pontos durante a predição.
+        paths: list[list[tuple[float, float]] | None] = [None] * count
         for i in range(count):
-            sp = camera.world_to_screen((px[i], py[i]))
-            paths.append([(sp.x, sp.y)])
+            if camera.is_visible((px[i], py[i]), radii[i]):
+                sp = camera.world_to_screen((px[i], py[i]))
+                paths[i] = [(sp.x, sp.y)]
 
         for _ in range(steps):
-            gravity.compute_accelerations_flat(px, py, masses, ax, ay)
+            proximity = gravity.compute_accelerations_flat(
+                px, py, masses, ax, ay,
+                radii=radii,
+            )
+            if proximity:
+                # Corpos prestes a colidir: a simulação real os fundirá.
+                # Prever adiante produziria trajetórias que atravessam umas
+                # às outras, sem valor físico nem visual.
+                break
 
             for i in range(count):
                 vx[i] += ax[i] * dt
@@ -108,10 +124,13 @@ class TrajectoryVisualizer:
                 px[i] += vx[i] * dt
                 py[i] += vy[i] * dt
 
-                sp = camera.world_to_screen((px[i], py[i]))
-                paths[i].append((sp.x, sp.y))
+                path = paths[i]
+                if path is not None:
+                    sp = camera.world_to_screen((px[i], py[i]))
+                    path.append((sp.x, sp.y))
 
         for path in paths:
-            renderer.draw_polyline(self.color, path, width=self.width)
+            if path is not None and len(path) >= 2:
+                renderer.draw_polyline(self.color, path, width=self.width)
 
         return perf_counter() - start

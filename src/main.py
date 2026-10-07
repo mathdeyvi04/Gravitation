@@ -140,7 +140,7 @@ class Gravitation(Application):
         ))
 
         G = self.sim_config.gravitational_constant
-        count = 10
+        count = 20
         for _ in range(count):
             r = random.uniform(80.0, 420.0)
             theta = random.uniform(0.0, 2.0 * math.pi)
@@ -314,7 +314,7 @@ class Gravitation(Application):
                 f"Tempo de Passo de Simulação: "
                 f"{self.integration_time_last_step:.2f}ms"
             ),
-            (self.config.width - 30, self.config.height - 25),
+            (self.config.width - 320, self.config.height - 25),
             size=25,
             color=(255, 255, 255),
         )
