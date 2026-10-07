@@ -70,3 +70,45 @@ class Entity(ABC):
         """
         Hook de limpeza opcional.
         """
+
+    def hit_test(
+            self,
+            world_position: pygame.Vector2,
+            alpha: float = 1.0,
+    ) -> bool:
+        """
+        Indica se um ponto do mundo pertence visualmente à entidade.
+        Entidades que podem ser selecionadas devem sobrescrever este method.
+
+        Alguma entidade pode simplesmente não ser clicável, então vamos manter o não selecionável
+        e não deixar esse method abstrato.
+        """
+        return False
+
+    def get_world_bounds(
+            self,
+            alpha: float = 1.0,
+    ) -> tuple[
+             float,
+             float,
+             float,
+             float,
+         ] | None:
+        """
+        Retorna o bounding box da entidade em world_space.
+
+        Entidades sem uma forma espacial definida podem retornar None.
+        """
+        return None
+
+    def is_visible(
+            self,
+            camera: Camera2D,
+            alpha: float = 1.0,
+    ) -> bool:
+        bounds = self.get_world_bounds(alpha)
+
+        if bounds is None:
+            return True
+
+        return camera.is_world_bounds_visible(bounds)

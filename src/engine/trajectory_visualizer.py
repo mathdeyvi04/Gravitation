@@ -1,7 +1,6 @@
 import math
-
-import pygame
-
+from src.physics.gravity import NewtonianGravity
+from time import perf_counter
 from src.engine.camera import Camera2D
 from src.engine.renderer import Renderer
 
@@ -51,34 +50,34 @@ class TrajectoryVisualizer:
         self.enabled = not self.enabled
 
     def draw(
-        self,
-        renderer: Renderer,
-        camera: Camera2D,
-        bodies,
-        gravitational_constant: float,
-        softening: float,
-        fixed_delta_time: float,
-    ) -> None:
-        """
-        Prevê e desenha a trajetória futura dos corpos.
+            self,
+            renderer: Renderer,
+            camera: Camera2D,
+            bodies,
+            gravity: NewtonianGravity,
+            fixed_delta_time: float,
+    ) -> float | None:
+        """Prevê e desenha a trajetória futura dos corpos.
 
         Toda a previsão acontece em estado temporário. Nenhum objeto
-        real da simulação é alterado.
+        real da simulação é alterado. Devolve o tempo gasto na operação
+        em segundos, ou `None` quando a visualização está desligada ou
+        os parâmetros impedem a predição.
         """
         if not self.enabled:
-            return
+            return None
 
         if not bodies:
-            return
+            return None
 
         if fixed_delta_time <= 0.0:
-            return
+            return None
+
+        start = perf_counter()
 
         count = len(bodies)
         steps = self.steps
         dt = fixed_delta_time
-        G = gravitational_constant
-        eps_sq = softening * softening
 
         # Estado temporário em listas planas de floats. Evita alocações
         # de `pygame.Vector2` dentro do laço quente.
@@ -88,56 +87,31 @@ class TrajectoryVisualizer:
         vy = [b.velocity.y for b in bodies]
         masses = [b.mass for b in bodies]
 
-        # Pré-calcula dt/m por corpo. Zero para massless.
-        dt_over_m = [
-            (dt / m if m > 0.0 else 0.0)
-            for m in masses
-        ]
+        # Buffers de aceleração preenchidos pelo gravitador a cada passo.
+        ax = [0.0] * count
+        ay = [0.0] * count
 
-        # Uma polilinha em screen_space por corpo. O primeiro ponto
-        # já entra aqui.
+        # Uma polilinha em screen_space por corpo. O primeiro ponto já
+        # entra aqui para que a integração a seguir só precise anexar.
         paths: list[list[tuple[float, float]]] = []
         for i in range(count):
             sp = camera.world_to_screen((px[i], py[i]))
             paths.append([(sp.x, sp.y)])
 
         for _ in range(steps):
+            gravity.compute_accelerations_flat(px, py, masses, ax, ay)
 
-            # 1. Gravidade e impulso numa única passada.
-            #    Cada par (i, j), i < j, é visitado exatamente uma vez
-            #    e contribui para ambos os corpos. Elimina a lista
-            #    `forces` e uma segunda iteração.
             for i in range(count):
-                xi = px[i]
-                yi = py[i]
-                mi = masses[i]
-                fxi = 0.0
-                fyi = 0.0
-                for j in range(i + 1, count):
-                    dx = px[j] - xi
-                    dy = py[j] - yi
-                    dist_sq = dx * dx + dy * dy + eps_sq
-                    if dist_sq < 1e-12:
-                        continue
-                    inv_dist = 1.0 / math.sqrt(dist_sq)
-                    scale = G * mi * masses[j] * inv_dist / dist_sq
-                    fxi += dx * scale
-                    fyi += dy * scale
-                    # Reação em j aplicada imediatamente.
-                    vx[j] -= dx * scale * dt_over_m[j]
-                    vy[j] -= dy * scale * dt_over_m[j]
+                vx[i] += ax[i] * dt
+                vy[i] += ay[i] * dt
 
-                vx[i] += fxi * dt_over_m[i]
-                vy[i] += fyi * dt_over_m[i]
-
-            # 2. Integração semi-implícita + coleta do ponto de tela.
-            for i in range(count):
                 px[i] += vx[i] * dt
                 py[i] += vy[i] * dt
+
                 sp = camera.world_to_screen((px[i], py[i]))
                 paths[i].append((sp.x, sp.y))
 
-        # 3. Uma chamada de polilinha por corpo em vez de `steps`
-        #    chamadas de segmento.
         for path in paths:
             renderer.draw_polyline(self.color, path, width=self.width)
+
+        return perf_counter() - start

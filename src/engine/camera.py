@@ -1,5 +1,6 @@
 import pygame
-
+from typing import Union
+ScalarOrVec = Union[float, tuple[float, float], pygame.Vector2]
 
 class Camera2D:
     """
@@ -38,12 +39,6 @@ class Camera2D:
         """
         return self.viewport_size * 0.5
 
-    def escalar_world_to_screen(self, world_dist: float):
-        return world_dist * self.zoom
-
-    def escalar_screen_to_world(self, screen_dist: float):
-        return screen_dist / self.zoom
-
     def world_to_screen(
         self,
         world_position: pygame.Vector2 | tuple[float, float],
@@ -74,25 +69,28 @@ class Camera2D:
 
     def world_to_screen_size(
         self,
-        world_size: pygame.Vector2 | tuple[float, float],
-    ) -> pygame.Vector2:
-        """
-        Converte uma dimensão de world_space para screen_space.
+        world_size: ScalarOrVec,
+    ) -> Union[float, pygame.Vector2]:
+        """Converte uma dimensão de world_space para screen_space.
 
-        Exemplo:
-            tamanho de 100 unidades no mundo
-            zoom = 2
-            resultado = 200 pixels
+        Aceita `float` (raio, comprimento) ou vetor/tupla (largura,
+        altura). O tipo de retorno acompanha o da entrada: `float` para
+        `float`, `Vector2` para vetor ou tupla.
         """
+        if isinstance(world_size, (int, float)):
+            return world_size * self.zoom
         return pygame.Vector2(world_size) * self.zoom
 
     def screen_to_world_size(
         self,
-        screen_size: pygame.Vector2 | tuple[float, float],
-    ) -> pygame.Vector2:
+        screen_size: ScalarOrVec,
+    ) -> Union[float, pygame.Vector2]:
+        """Converte uma dimensão de screen_space para world_space.
+
+        Mesma política de tipo de `world_to_screen_size`.
         """
-        Converte uma dimensão de screen_space para world_space.
-        """
+        if isinstance(screen_size, (int, float)):
+            return screen_size / self.zoom
         return pygame.Vector2(screen_size) / self.zoom
 
     def world_to_screen_rect(
@@ -144,3 +142,59 @@ class Camera2D:
         Atualiza o tamanho da área visível.
         """
         self.viewport_size.update(viewport_size)
+
+    def world_view_bounds(
+            self,
+    ) -> tuple[float, float, float, float]:
+        """Retorna os limites visíveis da câmera em world_space.
+
+        Ordem: `(min_x, min_y, max_x, max_y)`.
+        """
+        half_width = self.viewport_size.x * 0.5 / self.zoom
+        half_height = self.viewport_size.y * 0.5 / self.zoom
+
+        return (
+            self.position.x - half_width,
+            self.position.y - half_height,
+            self.position.x + half_width,
+            self.position.y + half_height,
+        )
+
+    def is_world_bounds_visible(
+            self,
+            bounds: tuple[float, float, float, float],
+    ) -> bool:
+        """Indica se um AABB em world_space intersecta a região visível.
+
+        `bounds` segue a ordem `(min_x, min_y, max_x, max_y)`. Teste de
+        separação de eixos: dois AABBs se sobrepõem sse nenhum dos quatro
+        casos de afastamento acontece.
+        """
+        view_min_x, view_min_y, view_max_x, view_max_y = self.world_view_bounds()
+
+        object_min_x, object_min_y, object_max_x, object_max_y = bounds
+
+        return not (
+                object_max_x < view_min_x
+                or object_min_x > view_max_x
+                or object_max_y < view_min_y
+                or object_min_y > view_max_y
+        )
+
+    def is_visible(
+            self,
+            world_position: pygame.Vector2 | tuple[float, float],
+            radius: float = 0.0,
+    ) -> bool:
+        """Indica se um círculo em world_space intersecta a região visível.
+
+        `radius` é a folga em unidades de mundo. Para um ponto puro, passe
+        zero. Implementado como um AABB — para círculos na borda da tela
+        é conservador (aceita como visível quem só encosta nos cantos),
+        mas evita a raiz quadrada e mantém a checagem barata.
+        """
+        x, y = pygame.Vector2(world_position)
+
+        return self.is_world_bounds_visible(
+            (x - radius, y - radius, x + radius, y + radius)
+        )

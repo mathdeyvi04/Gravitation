@@ -82,4 +82,4 @@ class SimulationConfig:
 
     # Quantidade máxima de passos fixos usados na previsão
     # da trajetória futura.
-    future_trajectory_steps: int = 600
+    future_trajectory_steps: int = 2000

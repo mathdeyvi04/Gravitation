@@ -23,7 +23,6 @@ class MassObject(Entity):
         "mass",
         "radius",
         "color",
-        "force",
         "last_force",
         "previous_position",
     )
@@ -44,17 +43,11 @@ class MassObject(Entity):
         geração aleatória fica limitada a esses defaults — útil apenas
         para testes rápidos.
         """
-        if config is None:
-            world_w, world_h = 1000.0, 1000.0
-            mass_range = (1.0, 10.0)
-            radius_range = (4.0, 16.0)
-            speed_range = (0.0, 50.0)
-        else:
-            world_w = config.world_width
-            world_h = config.world_height
-            mass_range = config.mass_range
-            radius_range = config.radius_range
-            speed_range = config.velocity_range
+        world_w = config.world_width
+        world_h = config.world_height
+        mass_range = config.mass_range
+        radius_range = config.radius_range
+        speed_range = config.velocity_range
 
         if position is None:
             position = pygame.Vector2(
@@ -88,57 +81,21 @@ class MassObject(Entity):
         self.mass = mass
         self.radius = radius
         self.color = color
-        self.force = pygame.Vector2(0.0, 0.0)
         self.previous_position = pygame.Vector2(self.position)
 
         # Vamos guardar informações para podermos desenhá-las
         self.last_force = pygame.Vector2(0.0, 0.0)
 
-    @property
-    def inv_mass(self) -> float:
-        """Inverso da massa (0.0 se massless). Útil em integração."""
-        return 1.0 / self.mass if self.mass > 0.0 else 0.0
-
-    def apply_mutual_gravity(
-        self,
-        other: "MassObject",
-        gravitational_constant: float,
-        softening: float = 0.0,
-    ) -> None:
-        """Aplica a atração gravitacional mútua entre `self` e `other`.
-
-        Respeita a 3ª lei de Newton: mesma magnitude aplicada em cada
-        corpo, sentidos opostos. `softening` (ε) evita singularidade
-        quando a distância tende a zero (modelo de Plummer):
-            F = G·m₁·m₂ / (r² + ε²)^(3/2) · Δ
-        """
-        delta = other.position - self.position
-        dist_sq = delta.length_squared() + softening * softening
-        if dist_sq < 1e-12:
-            return
-
-        inv_dist = 1.0 / math.sqrt(dist_sq)
-        scale = gravitational_constant * self.mass * other.mass * inv_dist / dist_sq
-        force = delta * scale
-        self.force += force
-        other.force -= force
-
     def update(self, delta_time: float) -> None:
         """MassObject não usa delta variável: toda física é em passo fixo."""
 
     def fixed_update(self, fixed_delta_time: float) -> None:
-        """Integra o movimento (Euler semi-implícito) e zera a força.
-
-        A ordem — atualizar velocidade, depois posição com a velocidade
-        nova — corresponde ao integrador semi-implícito, que é estável
-        para sistemas gravitacionais simples.
         """
-        self.previous_position.update(self.position)
-        if self.mass > 0.0:
-            self.velocity += self.force * (fixed_delta_time / self.mass)
-        self.position += self.velocity * fixed_delta_time
-        self.last_force.update(self.force)
-        self.force.update(0.0, 0.0)
+        A integração física é realizada externamente pelo Integrator.
+
+        MassObject representa o estado físico do corpo, mas não decide
+        qual method numérico deve ser usado para integrá-lo.
+        """
 
     def render(
         self,
@@ -152,10 +109,14 @@ class MassObject(Entity):
             if alpha < 1.0
             else self.position
         )
+
+        if not self.is_visible(camera, alpha):
+            return
+
         renderer.draw_circle(
             self.color,
             camera.world_to_screen(pos),
-            camera.escalar_world_to_screen(self.radius),
+            camera.world_to_screen_size(self.radius),
         )
 
     def overlaps(self, other: "MassObject") -> bool:
@@ -184,4 +145,50 @@ class MassObject(Entity):
         ) / total
         self.radius = (self.radius ** 3 + other.radius ** 3) ** (1.0 / 3.0)
         self.mass = total
+        self.previous_position.update(self.position)
         other.destroy()
+
+    def get_world_bounds(
+            self,
+            alpha: float = 1.0,
+    ) -> tuple[
+        float,
+        float,
+        float,
+        float,
+    ]:
+        position = (
+            self.previous_position.lerp(
+                self.position,
+                alpha,
+            )
+            if alpha < 1.0
+            else self.position
+        )
+
+        return (
+            position.x - self.radius,
+            position.y - self.radius,
+            position.x + self.radius,
+            position.y + self.radius,
+        )
+
+    def hit_test(
+            self,
+            world_position: pygame.Vector2,
+            alpha: float = 1.0,
+    ) -> bool:
+
+        position = (
+            self.previous_position.lerp(
+                self.position,
+                alpha,
+            )
+            if alpha < 1.0
+            else self.position
+        )
+
+        return (
+                position.distance_squared_to(world_position)
+                <= self.radius * self.radius
+        )

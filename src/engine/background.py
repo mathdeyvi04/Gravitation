@@ -21,6 +21,8 @@ class Background:
         "_parallax",
         "_offset_x",
         "_offset_y",
+        "_last_cam_x",
+        "_last_cam_y",
         "background_color"
     )
 
@@ -37,6 +39,9 @@ class Background:
         de profundidade (0.0 = fixo na tela; 1.0 = acompanha o mundo).
         """
 
+        self._last_cam_x = float("nan")
+        self._last_cam_y = float("nan")
+
         if path and background_color is None:
             self.is_img = True
             tile = pygame.image.load(str(path)).convert()
@@ -51,6 +56,8 @@ class Background:
             self.is_img = False
             self.background_color = background_color
             return
+
+        raise AttributeError
 
     @staticmethod
     def _build_canvas(
@@ -73,10 +80,20 @@ class Background:
         então o offset fica sempre dentro de um tile — é o que permite
         cobrir a tela com um único `blit`.
         """
-        if self.is_img:
-            self._offset_x = -(camera_position.x * self._parallax) % self._tile_w
-            self._offset_y = -(camera_position.y * self._parallax) % self._tile_h
+        if not self.is_img:
             return
+
+        cx = camera_position.x
+        cy = camera_position.y
+
+        if cx == self._last_cam_x and cy == self._last_cam_y:
+            return
+
+        self._last_cam_x = cx
+        self._last_cam_y = cy
+
+        self._offset_x = -(cx * self._parallax) % self._tile_w
+        self._offset_y = -(cy * self._parallax) % self._tile_h
 
     def draw(self, renderer: Renderer) -> None:
         """Blita o mosaico cobrindo a tela inteira."""

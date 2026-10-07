@@ -71,6 +71,20 @@ class World(Generic[T]):
         for entity in self.entities:
             entity.fixed_update(fixed_delta_time)
 
+    def visible_entities(
+            self,
+            camera: Camera2D,
+            alpha: float = 1.0,
+    ) -> Iterator[T]:
+
+        for entity in self.entities:
+
+            if not entity.active:
+                continue
+
+            if entity.is_visible(camera, alpha):
+                yield entity
+
     def render(
         self,
         renderer: Renderer,
