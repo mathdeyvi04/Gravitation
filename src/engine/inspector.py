@@ -6,6 +6,11 @@ import pygame
 
 from src.entities.entity import Entity
 
+_TITLE_COLOR = (255, 255, 255)
+_PRIMARY_TEXT_COLOR = (255, 255, 255)
+_REFERENCE_TEXT_COLOR = (255, 190, 70)
+_BACKGROUND_COLOR = (10, 10, 15)
+_BORDER_COLOR = (180, 180, 180)
 
 @dataclass(frozen=True)
 class InspectionProperty:
@@ -19,10 +24,127 @@ class InspectionProperty:
     getter: Callable[[Any], Any]
     formatter: Callable[[Any], str]
 
+@dataclass(frozen=True)
+class RelativeInspectionProperty:
+    """Propriedade calculada a partir de dois corpos."""
 
-def format_vector(value: pygame.Vector2) -> str:
-    """Formata um `Vector2` como `(x, y)` com 3 casas decimais."""
-    return f"({value.x:.3f}, {value.y:.3f})"
+    label: str
+    getter: Callable[[Any], Any]
+    formatter: Callable[[Any], str]
+
+class RelationInspector:
+    """
+    Mantém o corpo de referência e as propriedades relacionais.
+
+    O corpo principal continua sendo responsabilidade do Inspector.
+    """
+
+    def __init__(self) -> None:
+        self._reference: Entity | None = None
+
+        self._registry: dict[
+            tuple[type[Entity], type[Entity]],
+            tuple[
+                Callable[[Entity, Entity], Any],
+                tuple[RelativeInspectionProperty, ...],
+            ],
+        ] = {}
+
+    def register(
+        self,
+        primary_type: type[Entity],
+        reference_type: type[Entity],
+        context_factory: Callable[[Entity, Entity], Any],
+        *properties: RelativeInspectionProperty,
+    ) -> None:
+        """Registra uma análise entre dois tipos de entidade."""
+
+        self._registry[
+            (primary_type, reference_type)
+        ] = (
+            context_factory,
+            tuple(properties),
+        )
+
+    def select_reference(
+        self,
+        entity: Entity | None,
+    ) -> None:
+        self._reference = entity
+
+    def clear(self) -> None:
+        self._reference = None
+
+    @property
+    def reference(self) -> Entity | None:
+        if (
+            self._reference is None
+            or not self._reference.active
+        ):
+            return None
+
+        return self._reference
+
+    def _get_registration(
+        self,
+        primary: Entity,
+    ):
+        reference = self.reference
+
+        if reference is None:
+            return None
+
+        # Permite que subclasses herdem registros.
+        for primary_class in type(primary).__mro__:
+            for reference_class in type(reference).__mro__:
+
+                registration = self._registry.get(
+                    (
+                        primary_class,
+                        reference_class,
+                    )
+                )
+
+                if registration is not None:
+                    return registration
+
+        return None
+
+    def get_context(
+        self,
+        primary: Entity,
+    ) -> Any | None:
+
+        reference = self.reference
+
+        if reference is None or reference is primary:
+            return None
+
+        registration = self._get_registration(primary)
+
+        if registration is None:
+            return None
+
+        context_factory, _ = registration
+
+        return context_factory(
+            primary,
+            reference,
+        )
+
+    def get_properties(
+        self,
+        primary: Entity,
+    ) -> tuple[RelativeInspectionProperty, ...]:
+
+        registration = self._get_registration(primary)
+
+        if registration is None:
+            return ()
+
+        _, properties = registration
+
+        return properties
 
 
 class Inspector:
@@ -126,13 +248,15 @@ class InspectorHUD:
         self,
         renderer,
         inspector: Inspector,
+        relation_inspector: RelationInspector | None = None,
     ) -> None:
         """Desenha o painel se houver entidade selecionada com propriedades.
 
         Não faz nada quando não há seleção ou quando o tipo da entidade
-        não tem propriedades registradas. O layout é calculado a partir
-        da largura da linha mais longa; a caixa cresce para acomodar o
-        conteúdo em vez de ter tamanho fixo.
+        não tem propriedades registradas. As propriedades do corpo
+        principal saem em branco (mesma cor do anel de seleção); as que
+        dependem do corpo de referência saem em laranja (mesma cor do
+        anel de referência), incluindo o cabeçalho da seção.
         """
         entity = inspector.selected
 
@@ -144,6 +268,19 @@ class InspectorHUD:
         if not properties:
             return
 
+        relation_context = None
+        relation_properties = ()
+        reference = None
+
+        if relation_inspector is not None:
+            reference = relation_inspector.reference
+
+            if reference is not None:
+                relation_context = relation_inspector.get_context(entity)
+
+                if relation_context is not None:
+                    relation_properties = relation_inspector.get_properties(entity)
+
         title = f"CORPO: {type(entity).__name__}"
 
         title_width, title_height = renderer.measure_text(
@@ -151,31 +288,60 @@ class InspectorHUD:
             size=self.title_size,
         )
 
-        lines: list[str] = []
-
+        primary_lines: list[str] = []
         max_width = title_width
 
         for property_ in properties:
-
             value = property_.getter(entity)
             formatted_value = property_.formatter(value)
 
-            line = (
-                f"{property_.label}: "
-                f"{formatted_value}"
-            )
+            line = f"{property_.label}: {formatted_value}"
 
-            lines.append(line)
+            primary_lines.append(line)
 
             width, _ = renderer.measure_text(
                 line,
                 size=self.property_size,
             )
 
-            max_width = max(
-                max_width,
-                width,
+            max_width = max(max_width, width)
+
+        reference_lines: list[str] = []
+
+        if (
+                reference is not None
+                and relation_context is not None
+                and relation_properties
+        ):
+            reference_title = (
+                f"REFERÊNCIA: {type(reference).__name__}"
             )
+
+            reference_lines.append(reference_title)
+
+            width, _ = renderer.measure_text(
+                reference_title,
+                size=self.property_size,
+            )
+
+            max_width = max(max_width, width)
+
+            for property_ in relation_properties:
+                value = property_.getter(relation_context)
+                formatted_value = property_.formatter(value)
+
+                line = f"{property_.label}: {formatted_value}"
+
+                reference_lines.append(line)
+
+                width, _ = renderer.measure_text(
+                    line,
+                    size=self.property_size,
+                )
+
+                max_width = max(max_width, width)
+
+        total_lines = len(primary_lines) + len(reference_lines)
 
         line_height = renderer.measure_text(
             "Ag",
@@ -183,11 +349,11 @@ class InspectorHUD:
         )[1]
 
         height = (
-            self.padding * 2
-            + title_height
-            + self.line_spacing
-            + len(lines) * line_height
-            + max(0, len(lines) - 1) * self.line_spacing
+                self.padding * 2
+                + title_height
+                + self.line_spacing
+                + total_lines * line_height
+                + max(0, total_lines - 1) * self.line_spacing
         )
 
         rect = pygame.Rect(
@@ -197,16 +363,8 @@ class InspectorHUD:
             height,
         )
 
-        renderer.draw_rect(
-            (10, 10, 15),
-            rect,
-        )
-
-        renderer.draw_rect(
-            (180, 180, 180),
-            rect,
-            width=1,
-        )
+        renderer.draw_rect(_BACKGROUND_COLOR, rect)
+        renderer.draw_rect(_BORDER_COLOR, rect, width=1)
 
         x = rect.x + self.padding
         y = rect.y + self.padding
@@ -215,18 +373,27 @@ class InspectorHUD:
             title,
             (x, y),
             size=self.title_size,
-            color=(255, 220, 120),
+            color=_TITLE_COLOR,
         )
 
         y += title_height + self.line_spacing
 
-        for line in lines:
-
+        for line in primary_lines:
             renderer.draw_text(
                 line,
                 (x, y),
                 size=self.property_size,
-                color=(255, 255, 255),
+                color=_PRIMARY_TEXT_COLOR,
+            )
+
+            y += line_height + self.line_spacing
+
+        for line in reference_lines:
+            renderer.draw_text(
+                line,
+                (x, y),
+                size=self.property_size,
+                color=_REFERENCE_TEXT_COLOR,
             )
 
             y += line_height + self.line_spacing

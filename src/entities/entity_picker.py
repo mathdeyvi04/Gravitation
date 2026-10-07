@@ -34,6 +34,7 @@ class EntityPicker:
         camera: Camera2D,
         entities: Sequence[Entity],
         alpha: float = 1.0,
+        exclude: Entity | None = None,
     ) -> Entity | None:
         """Retorna a entidade selecionada pela posição de clique, ou None.
 
@@ -66,10 +67,20 @@ class EntityPicker:
             if not entity.active:
                 continue
 
-            if entity.hit_test(world_position, alpha):
-                return entity
+            if entity is exclude:
+                # A entidade excluída também bloqueia a tolerância.
+                if entity.hit_test(world_position, alpha):
+                    return None
 
-            if tolerance_world <= 0.0:
+                if (
+                        tolerance_world > 0.0
+                        and entity.click_distance(
+                    world_position,
+                    alpha,
+                ) <= tolerance_world
+                ):
+                    return None
+
                 continue
 
             distance = entity.click_distance(world_position, alpha)

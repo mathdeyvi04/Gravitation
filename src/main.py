@@ -12,12 +12,15 @@ from src.entities.massobject import MassObject
 from src.physics.gravity import NewtonianGravity
 from src.physics.rk4 import RK4Integrator
 from src.entities.entity_picker import EntityPicker
+from src.physics.relative_orbit import RelativeOrbit2D
 from src.engine.inspector import (
     Inspector,
     InspectorHUD,
     InspectionProperty,
-    format_vector,
+    RelationInspector,
+    RelativeInspectionProperty,
 )
+
 
 
 class Gravitation(Application):
@@ -66,6 +69,8 @@ class Gravitation(Application):
         self.inspector = Inspector()
         self.inspector_hud = InspectorHUD()
         self._register_mass_object_properties()
+        self.relation_inspector = RelationInspector()
+        self._register_mass_object_relation_properties()
 
         # Iniciamos o sistema
         self._seed_solar_system()
@@ -83,35 +88,139 @@ class Gravitation(Application):
         """
         self.inspector.register(
             MassObject,
-
             InspectionProperty(
                 "Massa",
                 lambda body: body.mass,
-                lambda value: f"{value:.3f}",
+                lambda value: f"{value:.2f}",
             ),
-
-            InspectionProperty(
-                "Posição",
-                lambda body: body.position,
-                format_vector,
-            ),
-
-            InspectionProperty(
-                "Velocidade",
-                lambda body: body.velocity.length(),
-                lambda value: f"{value:.3f}",
-            ),
-
-            InspectionProperty(
-                "Vetor velocidade",
-                lambda body: body.velocity,
-                format_vector,
-            ),
-
             InspectionProperty(
                 "Raio",
                 lambda body: body.radius,
-                lambda value: f"{value:.3f}",
+                lambda value: f"{value:.2f}",
+            ),
+            InspectionProperty(
+                "Velocidade",
+                lambda body: body.velocity.length(),
+                lambda value: f"{value:.2f}",
+            ),
+            InspectionProperty(
+                "Vetor velocidade",
+                lambda body: body.velocity,
+                lambda vector: f"({vector.x:.2f}, {vector.y:.2f})",
+            ),
+        )
+
+    def _register_mass_object_relation_properties(self) -> None:
+        """Registra as propriedades entre dois MassObject."""
+
+        self.relation_inspector.register(
+            MassObject,
+            MassObject,
+
+            lambda primary, reference: (
+                RelativeOrbit2D.from_bodies(
+                    primary,
+                    reference,
+                    self.sim_config.gravitational_constant,
+                )
+            ),
+
+            RelativeInspectionProperty(
+                "Distância relativa",
+                lambda orbit: orbit.distance,
+                lambda value: f"{value:.2f}",
+            ),
+
+            RelativeInspectionProperty(
+                "Vetor distância",
+                lambda orbit: orbit.relative_position,
+                lambda vector: (
+                    f"({vector.x:.2f}, {vector.y:.2f})"
+                ),
+            ),
+
+            RelativeInspectionProperty(
+                "Velocidade relativa",
+                lambda orbit: orbit.relative_speed,
+                lambda value: f"{value:.2f}",
+            ),
+
+            RelativeInspectionProperty(
+                "Vetor velocidade",
+                lambda orbit: orbit.relative_velocity,
+                lambda vector: (
+                    f"({vector.x:.2f}, {vector.y:.2f})"
+                ),
+            ),
+
+            RelativeInspectionProperty(
+                "Excentricidade",
+                lambda orbit: orbit.eccentricity,
+                lambda value: (
+                    "Indefinida"
+                    if value is None
+                    else f"{value:.4f}"
+                ),
+            ),
+
+            RelativeInspectionProperty(
+                "Tipo de órbita",
+                lambda orbit: orbit.orbit_type,
+                lambda value: value,
+            ),
+
+            RelativeInspectionProperty(
+                "Menor distância ao foco",
+                lambda orbit: orbit.periapsis_distance,
+                lambda value: (
+                    "Indefinida"
+                    if value is None
+                    else f"{value:.2f}"
+                ),
+            ),
+
+            RelativeInspectionProperty(
+                "Maior distância ao foco",
+                lambda orbit: orbit.apoapsis_distance,
+                lambda value: (
+                    "Não definida"
+                    if value is None
+                    else f"{value:.2f}"
+                ),
+            ),
+
+            RelativeInspectionProperty(
+                "Semi-eixo maior",
+                lambda orbit: orbit.semi_major_axis,
+                lambda value: (
+                    "Indefinido"
+                    if value is None
+                    else f"{value:.2f}"
+                ),
+            ),
+
+            RelativeInspectionProperty(
+                "Módulo Δv de escape",
+                lambda orbit: (
+                    None
+                    if orbit.escape_delta_v is None
+                    else orbit.escape_delta_v.length()
+                ),
+                lambda value: (
+                    "—"
+                    if value is None
+                    else f"{value:.2f}"
+                ),
+            ),
+
+            RelativeInspectionProperty(
+                "Δv de escape",
+                lambda orbit: orbit.escape_delta_v,
+                lambda vector: (
+                    "—"
+                    if vector is None
+                    else f"({vector.x:.2f}, {vector.y:.2f})"
+                ),
             ),
         )
 
@@ -128,7 +237,7 @@ class Gravitation(Application):
         cx = self.sim_config.world_width * 0.5
         cy = self.sim_config.world_height * 0.5
 
-        central_mass = 500.0
+        central_mass = 5000.0
         self.world.add(MassObject(
             config=self.sim_config,
             mass=central_mass,
@@ -139,7 +248,7 @@ class Gravitation(Application):
         ))
 
         G = self.sim_config.gravitational_constant
-        count = 1
+        count = 10
         for _ in range(count):
             r = random.uniform(80.0, 420.0)
             theta = random.uniform(0.0, 2.0 * math.pi)
@@ -213,6 +322,32 @@ class Gravitation(Application):
             else:
                 self.inspector.select(selected)
 
+            # Nova seleção principal invalida a relação anterior.
+            self.relation_inspector.clear()
+
+
+        elif self.input.was_mouse_button_pressed(
+                pygame.BUTTON_RIGHT
+        ):
+            # O botão direito só funciona após existir
+            # um corpo principal.
+            primary = self.inspector.selected
+
+            if primary is not None:
+
+                reference = self.entity_picker.pick(
+                    self.input.mouse_position,
+                    self.camera,
+                    self.world.entities,
+                    alpha=1.0,
+                    exclude=primary,
+                )
+
+                if reference is not None:
+                    self.relation_inspector.select_reference(
+                        reference
+                    )
+
     def fixed_update(self, fixed_delta_time: float) -> None:
         """Executa um passo físico completo usando RK4."""
 
@@ -274,9 +409,28 @@ class Gravitation(Application):
             alpha,
         )
 
-        selected = self.inspector.selected
+        selected: MassObject = self.inspector.selected
+        reference: MassObject = self.relation_inspector.reference
+
         if selected is not None:
-            selected.render_selection(renderer, self.camera, alpha)
+            selected.render_selection(
+                renderer,
+                self.camera,
+                alpha,
+                color=(255, 255, 255),
+            )
+
+        if (
+                selected is not None
+                and reference is not None
+                and reference is not selected
+        ):
+            reference.render_selection(
+                renderer,
+                self.camera,
+                alpha,
+                color=(255, 190, 70),
+            )
 
         # ------------------------------------------------------
         # Apresentação de HUD
@@ -284,6 +438,7 @@ class Gravitation(Application):
         self.inspector_hud.draw(
             renderer,
             self.inspector,
+            self.relation_inspector,
         )
 
         force_action = (

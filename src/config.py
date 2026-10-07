@@ -73,7 +73,7 @@ class SimulationConfig:
 
     # Constante gravitacional em unidades arbitrárias do mundo.
     # Ajuste junto com as massas para obter a escala de tempo desejada.
-    gravitational_constant: float = 2000.0
+    gravitational_constant: float = 200.0
 
     # Suavização de Plummer aplicada no cálculo da gravidade.
     # Evita forças explodirem quando dois corpos se aproximam muito.
@@ -82,4 +82,4 @@ class SimulationConfig:
 
     # Quantidade máxima de passos fixos usados na previsão
     # da trajetória futura.
-    future_trajectory_steps: int = 2000
+    future_trajectory_steps: int = 1000

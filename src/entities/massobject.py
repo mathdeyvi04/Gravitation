@@ -212,10 +212,11 @@ class MassObject(Entity):
         return max(0.0, position.distance_to(world_position) - self.radius)
 
     def render_selection(
-            self,
-            renderer: Renderer,
-            camera: Camera2D,
-            alpha: float = 1.0,
+        self,
+        renderer: Renderer,
+        camera: Camera2D,
+        alpha: float = 1.0,
+        color: tuple[int, int, int] = (255, 255, 255),
     ) -> None:
         """Desenha um anel branco ao redor do corpo quando selecionado.
 
@@ -234,7 +235,7 @@ class MassObject(Entity):
         ring_radius = body_radius + self.SELECTION_MARGIN
 
         renderer.draw_circle(
-            (255, 255, 255),
+            color,
             center,
             ring_radius,
             width=2,
