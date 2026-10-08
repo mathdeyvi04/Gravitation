@@ -13,6 +13,10 @@ class Camera2D:
     A câmera não desenha nada e não modifica os objetos do mundo.
     """
 
+    # Limites de zoom para evitar que a roda deixe a câmera inutilizável.
+    MIN_ZOOM: float = 0.1
+    MAX_ZOOM: float = 10.0
+
     def __init__(
         self,
         viewport_size: tuple[int, int],
@@ -133,6 +137,36 @@ class Camera2D:
             raise ValueError("zoom deve ser maior que zero.")
 
         self.zoom = float(zoom)
+
+    def zoom_at(
+        self,
+        screen_position: pygame.Vector2 | tuple[float, float],
+        factor: float,
+    ) -> None:
+        """Multiplica o zoom por `factor`, ancorando em `screen_position`.
+
+        O ponto do mundo sob `screen_position` permanece sob ele após o
+        ajuste — comportamento esperado em zoom por scroll. `factor > 1`
+        aproxima, `factor < 1` afasta. O novo zoom é limitado a
+        `[MIN_ZOOM, MAX_ZOOM]`; se o limite já está saturado, nada muda
+        (evita deslocar a câmera quando o zoom não mudaria).
+        """
+        if factor <= 0.0:
+            return
+
+        new_zoom = self.zoom * factor
+        if new_zoom < self.MIN_ZOOM:
+            new_zoom = self.MIN_ZOOM
+        elif new_zoom > self.MAX_ZOOM:
+            new_zoom = self.MAX_ZOOM
+
+        if new_zoom == self.zoom:
+            return
+
+        world_before = self.screen_to_world(screen_position)
+        self.zoom = new_zoom
+        world_after = self.screen_to_world(screen_position)
+        self.position += world_before - world_after
 
     def set_viewport_size(
         self,

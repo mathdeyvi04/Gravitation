@@ -24,7 +24,13 @@ class Application(ABC):
         self.config = config
         self.running = False
 
-        pygame.init()
+        # Inicializamos somente os subsistemas que a aplicação realmente
+        # usa. `pygame.init()` também sobe o mixer de áudio, que jamais é
+        # utilizado — e `pygame.mixer.quit()` é conhecido por travar o
+        # encerramento em várias combinações de driver/SO. Evitar o mixer
+        # deixa o shutdown previsível.
+        pygame.display.init()
+        pygame.font.init()
         self.screen = pygame.display.set_mode((config.width, config.height))
         pygame.display.set_caption(config.title)
 
@@ -105,6 +111,15 @@ class Application(ABC):
         self.running = False
 
     def shutdown(self) -> None:
-        """Finaliza o Pygame. Chamado automaticamente por `run()`."""
-        if pygame.get_init():
-            pygame.quit()
+        """Finaliza os subsistemas que a aplicação inicializou.
+
+        Fecha na ordem inversa de `__init__` para garantir que nenhuma
+        superfície/fonte fique pendurada enquanto o display ainda existe.
+        Não chamamos `pygame.quit()` porque ele desmontaria também o
+        mixer — que nunca inicializamos — e esse é o ponto onde o
+        encerramento costuma travar em certos drivers.
+        """
+        if pygame.font.get_init():
+            pygame.font.quit()
+        if pygame.display.get_init():
+            pygame.display.quit()

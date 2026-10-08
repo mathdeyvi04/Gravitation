@@ -311,13 +311,30 @@ class Gravitation(Application):
     def update(self, delta_time: float) -> None:
         """Lógica de delta variável: quando algo variar no sistema."""
 
+        # Zoom por scroll, ancorado no cursor. A base 1.1 dá um passo
+        # suave por notch; `**` acumula linearmente quando há vários.
+        if self.input.mouse_wheel != 0:
+            self.camera.zoom_at(
+                self.input.mouse_position,
+                1.1 ** self.input.mouse_wheel,
+            )
+
+        # Pan: enquanto o botão esquerdo estiver pressionado, a câmera
+        # segue o mouse. Dividir por `zoom` converte o deslocamento em
+        # pixels para unidades de mundo, então o conteúdo "gruda" no
+        # cursor independentemente do nível de zoom.
+        if self.input.is_mouse_button_down(pygame.BUTTON_LEFT):
+            self.camera.move(
+                -self.input.mouse_delta / self.camera.zoom
+            )
+
         if self.input.was_pressed(pygame.K_f):
             self.force_vectors.toggle()
 
         if self.input.was_pressed(pygame.K_t):
             self.future_trajectory.toggle()
 
-        if self.input.was_mouse_button_pressed(
+        if self.input.was_mouse_button_clicked(
                 pygame.BUTTON_LEFT
         ):
             selected = self.entity_picker.pick(

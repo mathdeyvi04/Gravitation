@@ -1,4 +1,4 @@
-import math
+import pygame
 from src.physics.gravity import NewtonianGravity
 from time import perf_counter
 from src.engine.camera import Camera2D
@@ -79,6 +79,12 @@ class TrajectoryVisualizer:
         if not bodies:
             return None
         if fixed_delta_time <= 0.0:
+            return None
+
+        # Fechamento pendente: não faz sentido gastar ~100ms prevendo uma
+        # trajetória que ninguém vai ver. O evento continua na fila — o
+        # `Application` ainda vai consumi-lo e encerrar normalmente.
+        if pygame.event.peek(pygame.QUIT):
             return None
 
         start = perf_counter()
