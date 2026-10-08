@@ -22,15 +22,13 @@ class InspectionProperty:
 
     `getter` extrai o valor de uma entidade; `formatter` o converte em
     string para exibição. Ambos recebem a entidade como argumento.
+
+    A mesma forma serve tanto para as propriedades do corpo principal
+    (consumidas por `Inspector`) quanto para as propriedades de um par
+    de corpos (consumidas por `RelationInspector`). Nesse segundo caso,
+    o `getter` recebe o contexto retornado pelo `context_factory` em vez
+    da entidade — a distinção é feita pelo registro, não pelo tipo.
     """
-
-    label: str
-    getter: Callable[[Any], Any]
-    formatter: Callable[[Any], str]
-
-@dataclass(frozen=True)
-class RelativeInspectionProperty:
-    """Propriedade calculada a partir de dois corpos."""
 
     label: str
     getter: Callable[[Any], Any]
@@ -50,7 +48,7 @@ class RelationInspector:
             tuple[type, type],
             tuple[
                 Callable[[Any, Any], Any],
-                tuple[RelativeInspectionProperty, ...],
+                tuple[InspectionProperty, ...],
             ],
         ] = {}
 
@@ -59,7 +57,7 @@ class RelationInspector:
         primary_type: type[Entity],
         reference_type: type[Entity],
         context_factory: Callable[[Any, Any], Any],
-        *properties: RelativeInspectionProperty,
+        *properties: InspectionProperty,
     ) -> None:
         """Registra uma análise entre dois tipos de entidade."""
 
@@ -138,7 +136,7 @@ class RelationInspector:
     def get_properties(
         self,
         primary: Entity,
-    ) -> tuple[RelativeInspectionProperty, ...]:
+    ) -> tuple[InspectionProperty, ...]:
 
         registration = self._get_registration(primary)
 

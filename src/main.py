@@ -20,14 +20,11 @@ from src.engine.inspector import (
     InspectorHUD,
     InspectionProperty,
     RelationInspector,
-    RelativeInspectionProperty,
 )
 from src.entities.rocket import Rocket
 from src.physics.composite_acceleration import (
     CompositeAccelerationModel,
 )
-
-
 
 class Gravitation(Application):
     """Simulação gravitacional de N corpos.
@@ -133,13 +130,13 @@ class Gravitation(Application):
                 )
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Distância relativa",
                 lambda orbit: orbit.distance,
                 lambda value: f"{value:.2f}",
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Vetor distância",
                 lambda orbit: orbit.relative_position,
                 lambda vector: (
@@ -147,13 +144,13 @@ class Gravitation(Application):
                 ),
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Velocidade relativa",
                 lambda orbit: orbit.relative_speed,
                 lambda value: f"{value:.2f}",
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Vetor velocidade",
                 lambda orbit: orbit.relative_velocity,
                 lambda vector: (
@@ -161,7 +158,7 @@ class Gravitation(Application):
                 ),
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Excentricidade",
                 lambda orbit: orbit.eccentricity,
                 lambda value: (
@@ -171,13 +168,13 @@ class Gravitation(Application):
                 ),
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Tipo de órbita",
                 lambda orbit: orbit.orbit_type,
                 lambda value: value,
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Menor distância ao foco",
                 lambda orbit: orbit.periapsis_distance,
                 lambda value: (
@@ -187,7 +184,7 @@ class Gravitation(Application):
                 ),
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Maior distância ao foco",
                 lambda orbit: orbit.apoapsis_distance,
                 lambda value: (
@@ -197,7 +194,7 @@ class Gravitation(Application):
                 ),
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Semi-eixo maior",
                 lambda orbit: orbit.semi_major_axis,
                 lambda value: (
@@ -207,7 +204,7 @@ class Gravitation(Application):
                 ),
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Período orbital",
                 lambda orbit: orbit.orbital_period,
                 lambda value: (
@@ -217,7 +214,7 @@ class Gravitation(Application):
                 ),
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Módulo Δv de escape",
                 lambda orbit: (
                     None
@@ -231,7 +228,7 @@ class Gravitation(Application):
                 ),
             ),
 
-            RelativeInspectionProperty(
+            InspectionProperty(
                 "Δv de escape",
                 lambda orbit: orbit.escape_delta_v,
                 lambda vector: (

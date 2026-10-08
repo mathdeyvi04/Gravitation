@@ -23,6 +23,9 @@ class Rocket(MassObject):
         "nose_color",
     )
 
+    ROCKET_COLOR = (220, 220, 230)
+    NOSE_COLOR = (240, 110, 80)
+
     def __init__(
         self,
         config: SimulationConfig,
@@ -35,8 +38,8 @@ class Rocket(MassObject):
         nose_length: float = 18.0,
         rotation_speed: float = math.radians(120.0),
         thrust_acceleration: float = 90.0,
-        color: tuple[int, int, int] = (220, 220, 230),
-        nose_color: tuple[int, int, int] = (240, 110, 80),
+        color: tuple[int, int, int] = ROCKET_COLOR,
+        nose_color: tuple[int, int, int] = NOSE_COLOR,
     ) -> None:
         total_length = body_length * 0.5 + nose_length
         bounding_radius = math.hypot(
