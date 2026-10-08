@@ -2,21 +2,29 @@ import math
 import pygame
 import random
 from typing import Optional
+
 from src.config import SimulationConfig
 from src.engine.camera import Camera2D
 from src.engine.renderer import Renderer
 from src.entities.entity import Entity
 
-class MassObject(Entity):
 
+class MassObject(Entity):
     """Corpo com massa e raio que interage gravitacionalmente.
 
-    Forças são acumuladas em `force` por um sistema externo (por exemplo,
-    chamando `apply_mutual_gravity` em cada par de corpos) e integradas
-    em `fixed_update`. O acumulador é zerado após cada integração.
+    `MassObject` representa o estado físico de um corpo — posição,
+    velocidade, massa, raio e cor — mas **não integra a si mesmo**.
+    A integração é responsabilidade de um `Integrator` externo, que lê
+    e escreve esses campos em passos fixos. Essa separação permite
+    trocar o método numérico (Euler, RK4, Verlet) sem tocar no corpo.
 
-    Interpolação: `previous_position` guarda o estado imediatamente
-    anterior ao último passo fixo, permitindo render suave entre passos.
+    Campos auxiliares:
+
+    - `previous_position` guarda o estado imediatamente anterior ao
+      último passo fixo, permitindo interpolação suave no render.
+    - `last_force` guarda a força da última avaliação do integrador,
+      usada apenas para visualização (o `VectorVisualizer` desenha a
+      seta correspondente).
     """
 
     __slots__ = (
@@ -27,23 +35,36 @@ class MassObject(Entity):
         "previous_position",
     )
 
+    # Folga em pixels entre a borda do disco e o anel de seleção.
+    # Constante de classe porque não muda por instância.
     SELECTION_MARGIN = 6
 
     def __init__(
-            self,
-            config: SimulationConfig,
-            mass: Optional[float] = None,
-            radius: Optional[float] = None,
-            position: Optional[pygame.Vector2] = None,
-            velocity: Optional[pygame.Vector2] = None,
-            color: tuple[int, int, int] = (220, 220, 220),
+        self,
+        config: SimulationConfig,
+        mass: Optional[float] = None,
+        radius: Optional[float] = None,
+        position: Optional[pygame.Vector2] = None,
+        velocity: Optional[pygame.Vector2] = None,
+        color: tuple[int, int, int] = (220, 220, 220),
     ) -> None:
-        """Cria um corpo. Qualquer parâmetro deixado como None é sorteado.
+        """Cria um corpo a partir de `config`.
 
-        `config` fornece os limites do sorteio (mundo, massa, raio,
-        velocidade). Sem ele, caem em valores padrão razoáveis e a
-        geração aleatória fica limitada a esses defaults — útil apenas
-        para testes rápidos.
+        Qualquer parâmetro deixado como `None` é sorteado dentro das
+        faixas definidas por `config`. Os sorteios são:
+
+        - **posição**: uniforme dentro de `[0, world_width] × [0, world_height]`.
+        - **massa**: uniforme em `config.mass_range`.
+        - **raio**: derivado da massa por `r ∝ m^(1/3)` quando só a massa
+          é informada, preservando a hipótese de densidade uniforme;
+          caso `radius_range` seja degenerado (mínimo igual ao máximo),
+          usa o valor mínimo.
+        - **velocidade**: direção uniforme em `[0, 2π)` e módulo uniforme
+          em `config.velocity_range` (distribuição isotrópica, ao
+          contrário de sortear `vx` e `vy` independentes).
+
+        `config` é obrigatório: os limites de sorteio vivem lá, não em
+        defaults escondidos na classe.
         """
         world_w = config.world_width
         world_h = config.world_height
@@ -61,11 +82,12 @@ class MassObject(Entity):
             mass = random.uniform(*mass_range)
 
         if radius is None:
-            # Deriva o raio da massa se o usuário só informou a massa.
-            # r ∝ m^(1/3) preserva densidade uniforme entre corpos.
+            # r ∝ m^(1/3): preserva a hipótese de densidade uniforme.
+            # Sem essa derivação, corpos de massas diferentes teriam
+            # densidades discrepantes e a fusão pareceria arbitrária.
             radius = radius_range[0] + (
-                    (radius_range[1] - radius_range[0])
-                    * ((mass - mass_range[0]) / (mass_range[1] - mass_range[0]))
+                (radius_range[1] - radius_range[0])
+                * ((mass - mass_range[0]) / (mass_range[1] - mass_range[0]))
             ) ** (1.0 / 3.0) if mass_range[1] > mass_range[0] else radius_range[0]
 
         if velocity is None:
@@ -76,7 +98,6 @@ class MassObject(Entity):
                 speed * math.sin(angle),
             )
 
-        # Com isso aqui criamos outros atributos
         super().__init__(position)
         if velocity is not None:
             self.velocity = pygame.Vector2(velocity)
@@ -84,19 +105,25 @@ class MassObject(Entity):
         self.radius = radius
         self.color = color
         self.previous_position = pygame.Vector2(self.position)
-
-        # Vamos guardar informações para podermos desenhá-las
         self.last_force = pygame.Vector2(0.0, 0.0)
 
     def update(self, delta_time: float) -> None:
-        """MassObject não usa delta variável: toda física é em passo fixo."""
+        """No-op: `MassObject` só reage a passos fixos.
+
+        Toda a dinâmica do corpo é determinística e roda em
+        `fixed_update` via o integrador externo. Manter este método
+        vazio é o que garante que o `update` de delta variável — usado
+        pela `Application` para lógica de frame — não interfira na
+        física.
+        """
 
     def fixed_update(self, fixed_delta_time: float) -> None:
-        """
-        A integração física é realizada externamente pelo Integrator.
+        """No-op: a integração é feita externamente pelo `Integrator`.
 
-        MassObject representa o estado físico do corpo, mas não decide
-        qual method numérico deve ser usado para integrá-lo.
+        O `MassObject` expõe `position`, `velocity`, `previous_position`
+        e `mass`, e o integrador escreve nesses campos. A escolha do
+        método numérico (Euler, RK4, Verlet) pertence ao integrador,
+        não ao corpo.
         """
 
     def render(
@@ -105,7 +132,13 @@ class MassObject(Entity):
         camera: Camera2D,
         alpha: float = 1.0,
     ) -> None:
-        """Desenha o corpo como um círculo preenchido."""
+        """Desenha o corpo como um disco preenchido.
+
+        A posição de desenho é interpolada entre `previous_position` e
+        `position` por `alpha`, o que suaviza o movimento quando a taxa
+        de render não coincide com a de passos fixos. Corpos fora da
+        área visível da câmera são ignorados.
+        """
         pos = (
             self.previous_position.lerp(self.position, alpha)
             if alpha < 1.0
@@ -122,17 +155,26 @@ class MassObject(Entity):
         )
 
     def overlaps(self, other: "MassObject") -> bool:
-        """Indica se os discos de `self` e `other` se sobrepõem. Útil para vermos a colisão."""
+        """Indica se os discos de `self` e `other` se sobrepõem.
+
+        Compara os quadrados das distâncias com o quadrado da soma dos
+        raios — evita a raiz quadrada. Colisão entre discos é
+        equivalente a colisão entre os círculos que representam.
+        """
         r = self.radius + other.radius
         return self.position.distance_squared_to(other.position) <= r * r
 
     def merge_with(self, other: "MassObject") -> None:
-        """Absorve `other` conservando massa, momento e volume.
+        """Absorve `other`, conservando massa, momento linear e volume.
 
-        O centro de massa e o momento linear total são preservados; o
-        raio é recalculado assumindo densidade uniforme (r ∝ m^(1/3)).
-        `other` é destruído ao final. Idempotente se `other` já estiver
-        inativo, porque `destroy()` é idempotente.
+        O novo centro de massa é a média ponderada das posições, e a
+        nova velocidade é a média ponderada das velocidades — o que
+        preserva o momento linear total do par. O raio é recalculado
+        assumindo densidade uniforme (`r ∝ m^(1/3)`).
+
+        `other` é destruído ao final. Idempotente no sentido de que
+        `destroy()` já é idempotente: chamar `merge_with` sobre um
+        corpo já inativo apenas o destrói e retorna sem efeito.
         """
         total = self.mass + other.mass
         if total <= 0.0:
@@ -147,23 +189,25 @@ class MassObject(Entity):
         ) / total
         self.radius = (self.radius ** 3 + other.radius ** 3) ** (1.0 / 3.0)
         self.mass = total
+
+        # A posição mudou; sem isso, o render interpolaria da posição
+        # antiga até a nova e o corpo pareceria deslizar após a fusão.
         self.previous_position.update(self.position)
+
         other.destroy()
 
     def get_world_bounds(
-            self,
-            alpha: float = 1.0,
-    ) -> tuple[
-        float,
-        float,
-        float,
-        float,
-    ]:
+        self,
+        alpha: float = 1.0,
+    ) -> tuple[float, float, float, float]:
+        """Retorna o AABB do disco em world_space na posição interpolada.
+
+        Ordem: `(min_x, min_y, max_x, max_y)`. Usado por `is_visible`
+        para decidir se o corpo aparece na tela, e reaproveitável para
+        qualquer checagem baseada em caixa.
+        """
         position = (
-            self.previous_position.lerp(
-                self.position,
-                alpha,
-            )
+            self.previous_position.lerp(self.position, alpha)
             if alpha < 1.0
             else self.position
         )
@@ -176,33 +220,36 @@ class MassObject(Entity):
         )
 
     def hit_test(
-            self,
-            world_position: pygame.Vector2,
-            alpha: float = 1.0,
+        self,
+        world_position: pygame.Vector2,
+        alpha: float = 1.0,
     ) -> bool:
+        """Indica se o ponto em world_space está dentro do disco.
 
+        Considera a posição interpolada por `alpha`, coerente com o que
+        está sendo desenhado no mesmo frame.
+        """
         position = (
-            self.previous_position.lerp(
-                self.position,
-                alpha,
-            )
+            self.previous_position.lerp(self.position, alpha)
             if alpha < 1.0
             else self.position
         )
 
         return (
-                position.distance_squared_to(world_position)
-                <= self.radius * self.radius
+            position.distance_squared_to(world_position)
+            <= self.radius * self.radius
         )
 
     def click_distance(
-            self,
-            world_position: pygame.Vector2,
-            alpha: float = 1.0,
+        self,
+        world_position: pygame.Vector2,
+        alpha: float = 1.0,
     ) -> float:
         """Distância do ponto à superfície do disco (0.0 se dentro).
 
-        Usa a posição interpolada, coerente com `hit_test` e `render`.
+        Coerente com `hit_test` e `render`: usa a posição interpolada.
+        É o que o `EntityPicker` consulta na fase de tolerância, quando
+        nenhuma entidade contém o ponto do clique diretamente.
         """
         position = (
             self.previous_position.lerp(self.position, alpha)
@@ -218,11 +265,15 @@ class MassObject(Entity):
         alpha: float = 1.0,
         color: tuple[int, int, int] = (255, 255, 255),
     ) -> None:
-        """Desenha um anel branco ao redor do corpo quando selecionado.
+        """Desenha um anel em volta do corpo para indicar seleção.
 
-        O anel é posicionado na posição interpolada (mesma do `render`) e
-        tem um respiro de alguns pixels em relação à borda do disco, para
-        permanecer visível em qualquer zoom.
+        O anel fica a `SELECTION_MARGIN` pixels da borda do disco, uma
+        folga constante em screen_space — assim o destaque permanece
+        perceptível mesmo em zooms extremos, onde o disco é minúsculo.
+
+        `color` permite usar cores diferentes para seleções distintas:
+        o `main.py` usa branco para a seleção principal e laranja para
+        o corpo de referência orbital.
         """
         position = (
             self.previous_position.lerp(self.position, alpha)

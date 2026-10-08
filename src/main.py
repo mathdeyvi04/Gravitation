@@ -159,7 +159,7 @@ class Gravitation(Application):
                 lambda value: (
                     "Indefinida"
                     if value is None
-                    else f"{value:.4f}"
+                    else f"{value:.2f}"
                 ),
             ),
 
@@ -196,6 +196,16 @@ class Gravitation(Application):
                     "Indefinido"
                     if value is None
                     else f"{value:.2f}"
+                ),
+            ),
+
+            RelativeInspectionProperty(
+                "Período orbital",
+                lambda orbit: orbit.orbital_period,
+                lambda value: (
+                    "—"
+                    if value is None
+                    else f"{value:.2f}s"
                 ),
             ),
 
@@ -256,8 +266,8 @@ class Gravitation(Application):
             px = cx + r * math.cos(theta)
             py = cy + r * math.sin(theta)
 
-            speed = math.sqrt(G * central_mass / r)
-            # speed = random.uniform(40, 90)
+            # speed = math.sqrt(G * central_mass / r)
+            speed = random.uniform(40, 90)
             vx = -speed * math.sin(theta)
             vy = speed * math.cos(theta)
 
@@ -409,8 +419,8 @@ class Gravitation(Application):
             alpha,
         )
 
-        selected: MassObject = self.inspector.selected
-        reference: MassObject = self.relation_inspector.reference
+        selected = self.inspector.selected
+        reference = self.relation_inspector.reference
 
         if selected is not None:
             selected.render_selection(

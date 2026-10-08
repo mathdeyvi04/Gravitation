@@ -28,7 +28,7 @@ class Background:
 
     def __init__(
         self,
-        background_color: tuple[int, int, int] = None,
+        background_color: tuple[int, int, int] = (255, 255, 255),
         path: str | Path = None,
         window_size: tuple[int, int] = None,
         parallax: float = 0.2,
@@ -42,7 +42,7 @@ class Background:
         self._last_cam_x = float("nan")
         self._last_cam_y = float("nan")
 
-        if path and background_color is None:
+        if path:
             self.is_img = True
             tile = pygame.image.load(str(path)).convert()
             self._tile_w, self._tile_h = tile.get_size()
@@ -52,12 +52,8 @@ class Background:
             self._canvas = self._build_canvas(tile, window_size)
             return
 
-        if background_color and path is None:
-            self.is_img = False
-            self.background_color = background_color
-            return
-
-        raise AttributeError
+        self.is_img = False
+        self.background_color = background_color
 
     @staticmethod
     def _build_canvas(
@@ -66,10 +62,10 @@ class Background:
     ) -> pygame.Surface:
         """Pré-monta o mosaico em uma superfície (W+tw, H+th)."""
         tw, th = tile.get_size()
-        W, H = window_size
-        canvas = pygame.Surface((W + tw, H + th)).convert()
-        for y in range(0, H + th, th):
-            for x in range(0, W + tw, tw):
+        width, height = window_size
+        canvas = pygame.Surface((width + tw, height + th)).convert()
+        for y in range(0, height + th, th):
+            for x in range(0, width + tw, tw):
                 canvas.blit(tile, (x, y))
         return canvas
 

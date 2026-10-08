@@ -9,21 +9,10 @@ T = TypeVar("T", bound=Entity)
 class World(Generic[T]):
     """Contêiner genérico de entidades.
 
-    Responsabilidades:
-
-    - Manter a lista de entidades e expor operações estáveis sobre ela.
-    - Delegar `update`, `fixed_update` e `render` a cada entidade.
-    - Purgar entidades inativas em uma única passada.
-
-    A `World` **não** contém física, regras de colisão ou qualquer
-    lógica específica de uma simulação. Essas decisões pertencem à
-    cena concreta, que opera sobre as entidades expostas por
-    `self.entities`. Isso mantém esta classe reaproveitável em outros
-    projetos que usem `Entity` como base.
-
-    A lista subjacente é `list[Entity]`. Índices espaciais ou outras
-    estruturas (grade, quadtree) podem ser adicionados aqui no futuro
-    sem alterar a API pública.
+    Delega `update`, `fixed_update` e `render` a cada entidade e purga
+    as inativas em uma passada única. Não contém física, colisão nem
+    qualquer lógica específica de simulação — essas decisões vivem na
+    cena concreta, que opera sobre `self.entities`.
     """
 
     __slots__ = ("entities",)
@@ -72,16 +61,14 @@ class World(Generic[T]):
             entity.fixed_update(fixed_delta_time)
 
     def visible_entities(
-            self,
-            camera: Camera2D,
-            alpha: float = 1.0,
+        self,
+        camera: Camera2D,
+        alpha: float = 1.0,
     ) -> Iterator[T]:
-
+        """Itera sobre entidades ativas visíveis pela `camera`."""
         for entity in self.entities:
-
             if not entity.active:
                 continue
-
             if entity.is_visible(camera, alpha):
                 yield entity
 
@@ -96,10 +83,5 @@ class World(Generic[T]):
             entity.render(renderer, camera, alpha)
 
     def purge_inactive(self) -> None:
-        """Remove entidades com `active == False` em uma passada O(N).
-
-        A reconstrução via list comprehension roda em C e substitui a
-        lista de uma só vez, sem invalidar iteradores que já tenham
-        terminado (esta chamada é sempre o último passo de um frame).
-        """
+        """Remove entidades com `active == False` em uma passada O(N)."""
         self.entities = [e for e in self.entities if e.active]

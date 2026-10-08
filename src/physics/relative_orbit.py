@@ -33,6 +33,10 @@ class RelativeOrbit2D:
     periapsis_distance: float | None
     apoapsis_distance: float | None
     semi_major_axis: float | None
+    # Período orbital kepleriano, em segundos do mundo. `None` quando
+    # a órbita não é fechada (parabólica ou hiperbólica) ou quando os
+    # elementos orbitais são indefinidos.
+    orbital_period: float | None
 
     orbit_type: str
 
@@ -78,7 +82,9 @@ class RelativeOrbit2D:
                 periapsis_distance=None,
                 apoapsis_distance=None,
                 semi_major_axis=None,
+                orbital_period=None,
                 orbit_type="Indefinido",
+                escape_delta_v=None,
             )
 
         r_dot_v = (
@@ -167,6 +173,17 @@ class RelativeOrbit2D:
         else:
             escape_delta_v = None
 
+        # Período orbital: válido apenas em órbitas ligadas, ou seja,
+        # quando o semieixo maior é positivo (elipse ou círculo).
+        # Parabólicas e hiperbólicas não têm período — `a` é indefinido
+        # ou negativo, respectivamente.
+        if semi_major_axis is not None and semi_major_axis > 0.0:
+            orbital_period = 2.0 * math.pi * math.sqrt(
+                semi_major_axis ** 3 / mu
+            )
+        else:
+            orbital_period = None
+
         return cls(
             relative_position=relative_position,
             relative_velocity=relative_velocity,
@@ -179,4 +196,5 @@ class RelativeOrbit2D:
             semi_major_axis=semi_major_axis,
             orbit_type=orbit_type,
             escape_delta_v=escape_delta_v,
+            orbital_period=orbital_period
         )

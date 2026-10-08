@@ -61,8 +61,4 @@ class SemiImplicitEulerIntegrator(Integrator):
             body.velocity += accelerations[i] * dt
             body.position += body.velocity * dt
 
-        return acceleration_model.compute_accelerations(
-            [body.position for body in bodies],
-            [body.velocity for body in bodies],
-            masses,
-        )
+        return accelerations

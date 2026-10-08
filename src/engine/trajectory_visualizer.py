@@ -101,10 +101,16 @@ class TrajectoryVisualizer:
         # Uma polilinha por corpo visível. Corpos fora da câmera ficam com
         # `None` e nunca acumulam pontos durante a predição.
         paths: list[list[tuple[float, float]] | None] = [None] * count
+        cam_x = camera.position.x
+        cam_y = camera.position.y
+        cam_zoom = camera.zoom
+        center_x = camera.viewport_center.x
+        center_y = camera.viewport_center.y
         for i in range(count):
             if camera.is_visible((px[i], py[i]), radii[i]):
-                sp = camera.world_to_screen((px[i], py[i]))
-                paths[i] = [(sp.x, sp.y)]
+                sp_x = (px[i] - cam_x) * cam_zoom + center_x
+                sp_y = (py[i] - cam_y) * cam_zoom + center_y
+                paths[i] = [(sp_x, sp_y)]
 
         for _ in range(steps):
             proximity = gravity.compute_accelerations_flat(

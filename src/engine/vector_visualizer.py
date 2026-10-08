@@ -51,9 +51,6 @@ class VectorVisualizer:
         if not self.enabled:
             return
 
-        if not camera.is_visible(origin):
-            return
-
         if vector.length_squared() <= 1e-12:
             return
 
