@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import math
 from dataclasses import dataclass
@@ -49,7 +48,7 @@ class RelativeOrbit2D:
         body: RelativeBody,
         reference: RelativeBody,
         gravitational_constant: float,
-    ) -> RelativeOrbit2D:
+    ) -> "RelativeOrbit2D":
 
         relative_position = (
             body.position - reference.position

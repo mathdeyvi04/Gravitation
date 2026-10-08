@@ -1,10 +1,14 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
-
+from typing import Any, Union
+from inspect import getmro
 import pygame
 
 from src.entities.entity import Entity
+from src.entities.massobject import MassObject
+from src.entities.rocket import Rocket
+
+AnyGrav = Union[Entity, MassObject, Rocket]
 
 _TITLE_COLOR = (255, 255, 255)
 _PRIMARY_TEXT_COLOR = (255, 255, 255)
@@ -43,9 +47,9 @@ class RelationInspector:
         self._reference: Entity | None = None
 
         self._registry: dict[
-            tuple[type[Entity], type[Entity]],
+            tuple[type, type],
             tuple[
-                Callable[[Entity, Entity], Any],
+                Callable[[Any, Any], Any],
                 tuple[RelativeInspectionProperty, ...],
             ],
         ] = {}
@@ -54,7 +58,7 @@ class RelationInspector:
         self,
         primary_type: type[Entity],
         reference_type: type[Entity],
-        context_factory: Callable[[Entity, Entity], Any],
+        context_factory: Callable[[Any, Any], Any],
         *properties: RelativeInspectionProperty,
     ) -> None:
         """Registra uma análise entre dois tipos de entidade."""
@@ -95,9 +99,8 @@ class RelationInspector:
             return None
 
         # Permite que subclasses herdem registros.
-        for primary_class in type(primary).__mro__:
-            for reference_class in type(reference).__mro__:
-
+        for primary_class in getmro(type(primary)):
+            for reference_class in getmro(type(reference)):
                 registration = self._registry.get(
                     (
                         primary_class,
@@ -160,7 +163,7 @@ class Inspector:
         """Inicializa sem entidade selecionada e sem registros."""
         self._selected: Entity | None = None
         self._registry: dict[
-            type[Entity],
+            type,
             tuple[InspectionProperty, ...],
         ] = {}
 
@@ -205,7 +208,7 @@ class Inspector:
         if entity is None:
             return ()
 
-        for cls in type(entity).__mro__:
+        for cls in getmro(type(entity)):
             properties = self._registry.get(cls)
             if properties is not None:
                 return properties
@@ -243,6 +246,17 @@ class InspectorHUD:
         self.title_size = title_size
         self.property_size = property_size
         self.line_spacing = line_spacing
+
+    @staticmethod
+    def _measure_into(
+        renderer,
+        text: str,
+        size: int,
+        current_max: int,
+    ) -> int:
+        """Mede `text` em `size` e devolve `max(current_max, largura)`."""
+        width, _ = renderer.measure_text(text, size=size)
+        return width if width > current_max else current_max
 
     def draw(
         self,
@@ -299,12 +313,12 @@ class InspectorHUD:
 
             primary_lines.append(line)
 
-            width, _ = renderer.measure_text(
+            max_width = self._measure_into(
+                renderer,
                 line,
-                size=self.property_size,
+                self.property_size,
+                max_width,
             )
-
-            max_width = max(max_width, width)
 
         reference_lines: list[str] = []
 
@@ -319,12 +333,12 @@ class InspectorHUD:
 
             reference_lines.append(reference_title)
 
-            width, _ = renderer.measure_text(
+            max_width = self._measure_into(
+                renderer,
                 reference_title,
-                size=self.property_size,
+                self.property_size,
+                max_width,
             )
-
-            max_width = max(max_width, width)
 
             for property_ in relation_properties:
                 value = property_.getter(relation_context)
@@ -334,12 +348,12 @@ class InspectorHUD:
 
                 reference_lines.append(line)
 
-                width, _ = renderer.measure_text(
+                max_width = self._measure_into(
+                    renderer,
                     line,
-                    size=self.property_size,
+                    self.property_size,
+                    max_width,
                 )
-
-                max_width = max(max_width, width)
 
         total_lines = len(primary_lines) + len(reference_lines)
 

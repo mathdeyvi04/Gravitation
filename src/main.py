@@ -2,6 +2,7 @@ import math
 import random
 import pygame
 from pathlib import Path
+from typing import Optional, Union
 from time import perf_counter
 from src.config import Configs, SimulationConfig
 from src.engine.application import Application
@@ -14,11 +15,16 @@ from src.physics.rk4 import RK4Integrator
 from src.entities.entity_picker import EntityPicker
 from src.physics.relative_orbit import RelativeOrbit2D
 from src.engine.inspector import (
+    AnyGrav,
     Inspector,
     InspectorHUD,
     InspectionProperty,
     RelationInspector,
     RelativeInspectionProperty,
+)
+from src.entities.rocket import Rocket
+from src.physics.composite_acceleration import (
+    CompositeAccelerationModel,
 )
 
 
@@ -38,7 +44,8 @@ class Gravitation(Application):
     ) -> None:
         super().__init__(config)
         self.sim_config = sim_config
-        self.world: World[MassObject] = World()
+        self.world: World[Union[MassObject, Rocket]] = World()
+        self.rocket: Optional[Rocket] = None
 
         self.gravity = NewtonianGravity(
             gravitational_constant=sim_config.gravitational_constant,
@@ -71,6 +78,7 @@ class Gravitation(Application):
         self._register_mass_object_properties()
         self.relation_inspector = RelationInspector()
         self._register_mass_object_relation_properties()
+        self._register_rocket_properties()
 
         # Iniciamos o sistema
         self._seed_solar_system()
@@ -173,7 +181,7 @@ class Gravitation(Application):
                 "Menor distância ao foco",
                 lambda orbit: orbit.periapsis_distance,
                 lambda value: (
-                    "Indefinida"
+                    "—"
                     if value is None
                     else f"{value:.2f}"
                 ),
@@ -183,7 +191,7 @@ class Gravitation(Application):
                 "Maior distância ao foco",
                 lambda orbit: orbit.apoapsis_distance,
                 lambda value: (
-                    "Não definida"
+                    "—"
                     if value is None
                     else f"{value:.2f}"
                 ),
@@ -193,7 +201,7 @@ class Gravitation(Application):
                 "Semi-eixo maior",
                 lambda orbit: orbit.semi_major_axis,
                 lambda value: (
-                    "Indefinido"
+                    "—"
                     if value is None
                     else f"{value:.2f}"
                 ),
@@ -234,6 +242,40 @@ class Gravitation(Application):
             ),
         )
 
+    def _register_rocket_properties(self) -> None:
+        """Registra propriedades específicas do foguete."""
+
+        self.inspector.register(
+            Rocket,
+
+            InspectionProperty(
+                "Ângulo",
+                lambda rocket: math.degrees(
+                    rocket.angle
+                ),
+                lambda value: f"{value:.2f}°",
+            ),
+
+            InspectionProperty(
+                "Direção do bico",
+                lambda rocket: rocket.forward,
+                lambda vector: (
+                    f"({vector.x:.2f}, "
+                    f"{vector.y:.2f})"
+                ),
+            ),
+
+            InspectionProperty(
+                "Propulsão",
+                lambda rocket: rocket.thrusting,
+                lambda value: (
+                    "ATIVA"
+                    if value
+                    else "INATIVA"
+                ),
+            ),
+        )
+
     # -- Internos -----------------------------------------------------
 
     def _seed_solar_system(self) -> None:
@@ -257,8 +299,7 @@ class Gravitation(Application):
             color=(255, 200, 80),
         ))
 
-        G = self.sim_config.gravitational_constant
-        count = 10
+        count = 2
         for _ in range(count):
             r = random.uniform(80.0, 420.0)
             theta = random.uniform(0.0, 2.0 * math.pi)
@@ -278,6 +319,24 @@ class Gravitation(Application):
                 position=pygame.Vector2(px, py),
                 velocity=pygame.Vector2(vx, vy),
             ))
+
+        self.rocket = self.world.add(
+            Rocket(
+                config=self.sim_config,
+                mass=10.0,
+                position=pygame.Vector2(
+                    cx - 350.0,
+                    cy - 350.0,
+                ),
+                velocity=pygame.Vector2(
+                    0.0,
+                    -35.0,
+                ),
+                angle=-math.pi * 0.5,
+                color=(220, 220, 230),
+                nose_color=(240, 110, 80),
+            )
+        )
 
     def _resolve_merges(self) -> None:
         """Funde pares sobrepostos. O mais massivo absorve o outro."""
@@ -334,6 +393,31 @@ class Gravitation(Application):
         if self.input.was_pressed(pygame.K_t):
             self.future_trajectory.toggle()
 
+        if (
+            self.rocket is not None
+            and self.rocket.active
+        ):
+            rotation_input = (
+                int(
+                    self.input.is_down(
+                        pygame.K_RIGHT
+                    )
+                )
+                -
+                int(
+                    self.input.is_down(
+                        pygame.K_LEFT
+                    )
+                )
+            )
+
+            self.rocket.set_control(
+                rotation_input,
+                self.input.is_down(
+                    pygame.K_SPACE
+                ),
+            )
+
         if self.input.was_mouse_button_clicked(
                 pygame.BUTTON_LEFT
         ):
@@ -379,11 +463,21 @@ class Gravitation(Application):
         """Executa um passo físico completo usando RK4."""
 
         bodies = self.world.entities
+
+        self.world.fixed_update(
+            fixed_delta_time
+        )
+        acceleration_model = (
+            CompositeAccelerationModel(
+                self.gravity,
+                bodies,
+            )
+        )
         start = perf_counter()
         accelerations = self.integrator.step(
             bodies,
             fixed_delta_time,
-            self.gravity,
+            acceleration_model,
         )
         elapsed = (perf_counter() - start) * 1000
         self.integration_time_last_step = elapsed
@@ -420,14 +514,27 @@ class Gravitation(Application):
                     scale=1,
                 )
 
+        selected = self.inspector.selected
+        reference: AnyGrav = self.relation_inspector.reference
+        trajectory_focus = (
+            (selected,)
+            if isinstance(
+                selected,
+                Rocket,
+            )
+            else ()
+        )
         spend_time = 0
         if self.future_trajectory.enabled:
-            spend_time = self.future_trajectory.draw(
-                renderer,
-                self.camera,
-                self.world.entities,
-                self.gravity,
-                self.clock.fixed_timestep,
+            spend_time = (
+                    self.future_trajectory.draw(
+                        renderer,
+                        self.camera,
+                        self.world.entities,
+                        self.gravity,
+                        self.clock.fixed_timestep,
+                        focus_entities=trajectory_focus,
+                    )
             )
 
         self.world.render(
@@ -435,9 +542,6 @@ class Gravitation(Application):
             self.camera,
             alpha,
         )
-
-        selected = self.inspector.selected
-        reference = self.relation_inspector.reference
 
         if selected is not None:
             selected.render_selection(
@@ -448,9 +552,9 @@ class Gravitation(Application):
             )
 
         if (
-                selected is not None
-                and reference is not None
-                and reference is not selected
+            selected is not None
+            and reference is not None
+            and reference is not selected
         ):
             reference.render_selection(
                 renderer,

@@ -107,6 +107,21 @@ class MassObject(Entity):
         self.previous_position = pygame.Vector2(self.position)
         self.last_force = pygame.Vector2(0.0, 0.0)
 
+    def additional_acceleration(
+        self,
+        position: pygame.Vector2,
+        velocity: pygame.Vector2,
+    ) -> Optional[pygame.Vector2]:
+        """Aceleração adicional específica do corpo."""
+        return None
+
+    def prediction_acceleration(
+        self,
+        elapsed_time: float,
+    ) -> Optional[pygame.Vector2]:
+        """Aceleração adicional usada pela previsão futura."""
+        return None
+
     def update(self, delta_time: float) -> None:
         """No-op: `MassObject` só reage a passos fixos.
 

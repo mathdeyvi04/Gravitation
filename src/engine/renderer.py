@@ -255,6 +255,27 @@ class Renderer:
             ],
         )
 
+    def draw_polygon(
+        self,
+        color: tuple[int, int, int],
+        points,
+        width: int = 0,
+    ) -> None:
+        """Desenha um polígono."""
+
+        pygame.draw.polygon(
+            self.surface,
+            color,
+            [
+                (
+                    round(point[0]),
+                    round(point[1]),
+                )
+                for point in points
+            ],
+            width,
+        )
+
     def draw_polyline(
             self,
             color: tuple[int, int, int],

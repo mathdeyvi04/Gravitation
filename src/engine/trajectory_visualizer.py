@@ -50,12 +50,13 @@ class TrajectoryVisualizer:
         self.enabled = not self.enabled
 
     def draw(
-            self,
-            renderer: Renderer,
-            camera: Camera2D,
-            bodies,
-            gravity: NewtonianGravity,
-            fixed_delta_time: float,
+        self,
+        renderer: Renderer,
+        camera: Camera2D,
+        bodies,
+        gravity: NewtonianGravity,
+        fixed_delta_time: float,
+        focus_entities=None,
     ) -> float | None:
         """Prevê e desenha a trajetória futura dos corpos.
 
@@ -74,8 +75,14 @@ class TrajectoryVisualizer:
         corpos nesse ponto, então prever adiante seria fisicamente inútil
         e visualmente confuso (as trajetórias se cruzariam).
         """
-        if not self.enabled:
+
+        focus_entities = tuple(
+            focus_entities or ()
+        )
+
+        if not self.enabled and not focus_entities:
             return None
+
         if not bodies:
             return None
         if fixed_delta_time <= 0.0:
@@ -104,32 +111,72 @@ class TrajectoryVisualizer:
         ax = [0.0] * count
         ay = [0.0] * count
 
-        # Uma polilinha por corpo visível. Corpos fora da câmera ficam com
-        # `None` e nunca acumulam pontos durante a predição.
-        paths: list[list[tuple[float, float]] | None] = [None] * count
+        focus_ids = {
+            id(entity)
+            for entity in focus_entities
+        }
+
+        paths: list[
+        list[tuple[float, float]] | None
+        ] = [None] * count
+
         cam_x = camera.position.x
         cam_y = camera.position.y
         cam_zoom = camera.zoom
         center_x = camera.viewport_center.x
         center_y = camera.viewport_center.y
-        for i in range(count):
-            if camera.is_visible((px[i], py[i]), radii[i]):
-                sp_x = (px[i] - cam_x) * cam_zoom + center_x
-                sp_y = (py[i] - cam_y) * cam_zoom + center_y
-                paths[i] = [(sp_x, sp_y)]
 
-        for _ in range(steps):
+        for i, body in enumerate(bodies):
+            should_draw = (
+                    self.enabled
+                    or id(body) in focus_ids
+            )
+
+            if (
+                    should_draw
+                    and camera.is_visible(
+                (px[i], py[i]),
+                radii[i],
+            )
+            ):
+                sp_x = (
+                               px[i] - cam_x
+                       ) * cam_zoom + center_x
+
+                sp_y = (
+                               py[i] - cam_y
+                       ) * cam_zoom + center_y
+
+                paths[i] = [
+                    (sp_x, sp_y)
+                ]
+
+        for step in range(steps):
             proximity = gravity.compute_accelerations_flat(
-                px, py, masses, ax, ay,
+                px,
+                py,
+                masses,
+                ax,
+                ay,
                 radii=radii,
             )
+
             if proximity:
-                # Corpos prestes a colidir: a simulação real os fundirá.
-                # Prever adiante produziria trajetórias que atravessam umas
-                # às outras, sem valor físico nem visual.
                 break
 
-            for i in range(count):
+            prediction_time = (
+                                      step + 1
+                              ) * dt
+
+            for i, body in enumerate(bodies):
+                extra = body.prediction_acceleration(
+                    prediction_time
+                )
+
+                if extra is not None:
+                    ax[i] += extra.x
+                    ay[i] += extra.y
+
                 vx[i] += ax[i] * dt
                 vy[i] += ay[i] * dt
 
@@ -137,9 +184,19 @@ class TrajectoryVisualizer:
                 py[i] += vy[i] * dt
 
                 path = paths[i]
+
                 if path is not None:
-                    sp = camera.world_to_screen((px[i], py[i]))
-                    path.append((sp.x, sp.y))
+                    sp_x = (
+                                   px[i] - cam_x
+                           ) * cam_zoom + center_x
+
+                    sp_y = (
+                                   py[i] - cam_y
+                           ) * cam_zoom + center_y
+
+                    path.append(
+                        (sp_x, sp_y)
+                    )
 
         for path in paths:
             if path is not None and len(path) >= 2:
