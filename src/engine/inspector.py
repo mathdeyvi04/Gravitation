@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Optional, Union
 from inspect import getmro
 import pygame
 
@@ -23,16 +23,18 @@ class InspectionProperty:
     `getter` extrai o valor de uma entidade; `formatter` o converte em
     string para exibição. Ambos recebem a entidade como argumento.
 
-    A mesma forma serve tanto para as propriedades do corpo principal
-    (consumidas por `Inspector`) quanto para as propriedades de um par
-    de corpos (consumidas por `RelationInspector`). Nesse segundo caso,
-    o `getter` recebe o contexto retornado pelo `context_factory` em vez
-    da entidade — a distinção é feita pelo registro, não pelo tipo.
+    `widget`, quando presente, é um callable
+    `(entidade, renderer, rect) -> None` invocado logo abaixo da linha
+    de texto da propriedade. Recebe um `pygame.Rect` com altura fixa
+    (`InspectorHUD.WIDGET_HEIGHT`) onde desenhar o que quiser — útil
+    para representações visuais que não cabem em texto, como um
+    diagrama orientado do corpo selecionado.
     """
 
     label: str
     getter: Callable[[Any], Any]
     formatter: Callable[[Any], str]
+    widget: Optional[Callable[[Any, Any, pygame.Rect], None]] = None
 
 class RelationInspector:
     """
@@ -223,6 +225,11 @@ class InspectorHUD:
     entidade — apenas consome o que o `Inspector` expõe.
     """
 
+    # Altura reservada, em pixels, para widgets anexados a uma linha
+    # de propriedade. Escolhido para caber um diagrama do foguete com
+    # folga dentro do painel.
+    WIDGET_HEIGHT = 56
+
     def __init__(
         self,
         margin: int = 10,
@@ -237,7 +244,8 @@ class InspectorHUD:
         conteúdo das bordas internas do painel. `title_size` e
         `property_size` são os tamanhos de fonte do título e das
         linhas, e `line_spacing` é o espaço vertical entre linhas
-        consecutivas.
+        consecutivas. `WIDGET_HEIGHT` é a altura reservada para o
+        widget opcional de cada `InspectionProperty`.
         """
         self.margin = margin
         self.padding = padding
@@ -301,6 +309,7 @@ class InspectorHUD:
         )
 
         primary_lines: list[str] = []
+        primary_widgets: dict[int, Callable] = {}
         max_width = title_width
 
         for property_ in properties:
@@ -310,6 +319,9 @@ class InspectorHUD:
             line = f"{property_.label}: {formatted_value}"
 
             primary_lines.append(line)
+
+            if property_.widget is not None:
+                primary_widgets[len(primary_lines) - 1] = property_.widget
 
             max_width = self._measure_into(
                 renderer,
@@ -354,6 +366,7 @@ class InspectorHUD:
                 )
 
         total_lines = len(primary_lines) + len(reference_lines)
+        widget_count = len(primary_widgets)
 
         line_height = renderer.measure_text(
             "Ag",
@@ -366,6 +379,7 @@ class InspectorHUD:
                 + self.line_spacing
                 + total_lines * line_height
                 + max(0, total_lines - 1) * self.line_spacing
+                + widget_count * (self.WIDGET_HEIGHT + self.line_spacing)
         )
 
         rect = pygame.Rect(
@@ -390,7 +404,7 @@ class InspectorHUD:
 
         y += title_height + self.line_spacing
 
-        for line in primary_lines:
+        for idx, line in enumerate(primary_lines):
             renderer.draw_text(
                 line,
                 (x, y),
@@ -399,6 +413,14 @@ class InspectorHUD:
             )
 
             y += line_height + self.line_spacing
+
+            widget = primary_widgets.get(idx)
+            if widget is not None:
+                widget_rect = pygame.Rect(
+                    x, y, max_width, self.WIDGET_HEIGHT
+                )
+                widget(entity, renderer, widget_rect)
+                y += self.WIDGET_HEIGHT + self.line_spacing
 
         for line in reference_lines:
             renderer.draw_text(

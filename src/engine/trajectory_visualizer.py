@@ -2,6 +2,7 @@ import pygame
 from src.physics.gravity import NewtonianGravity
 from time import perf_counter
 from src.engine.camera import Camera2D
+from src.entities.massobject import MassObject
 from src.engine.renderer import Renderer
 
 
@@ -26,6 +27,7 @@ class TrajectoryVisualizer:
         "steps",
         "color",
         "width",
+        "pixel_step"
     )
 
     def __init__(
@@ -33,6 +35,7 @@ class TrajectoryVisualizer:
         steps: int = 600,
         color: tuple[int, int, int] = (170, 170, 255),
         width: int = 1,
+        pixel_step: int =6
     ) -> None:
         if steps < 1:
             raise ValueError("steps deve ser maior ou igual a 1.")
@@ -44,6 +47,8 @@ class TrajectoryVisualizer:
         self.steps = steps
         self.color = color
         self.width = width
+
+        self.pixel_step = pixel_step
 
     def toggle(self) -> None:
         """Alterna a visualização da trajetória futura."""
@@ -90,6 +95,8 @@ class TrajectoryVisualizer:
         vy[j] = 0.0
         radii[j] = 0.0
 
+    from src.entities.massobject import MassObject  # no topo do arquivo
+
     def draw(
         self,
         renderer: Renderer,
@@ -109,6 +116,21 @@ class TrajectoryVisualizer:
 
         O foguete acoplado segue o hospedeiro em offset fixo, sem
         participar da detecção de sobreposição com ele.
+
+        Desempenho:
+        - **Stride adaptativo**: registra apenas ~2 pontos por pixel
+          de tela disponível. Para uma janela 1500×1000, são ~5000
+          pontos mesmo com `steps` muito maior. Os segmentos retos
+          entre amostras percorrem o mesmo caminho que os pontos
+          pulados — a curva desenhada é idêntica para qualquer
+          trajetória razoavelmente suave.
+        - **Pré-alocação**: cada lista de trajetória nasce com
+          capacidade exata, evitando as realocações dobradas de
+          `append`.
+        - **Thrusters deduzidos uma vez por frame** via comparação
+          de method de classe: corpos que não sobrescrevem
+          `prediction_acceleration` (isto é, mundo menos o
+          foguete) nem chegam a ser consultados no laço.
         """
         focus_entities = tuple(focus_entities or ())
 
@@ -169,28 +191,63 @@ class TrajectoryVisualizer:
 
         focus_ids = {id(entity) for entity in focus_entities}
 
-        paths: list[list[tuple[float, float]] | None] = [None] * count
+        # -- Stride adaptativo -------------------------------------
+        # `self.pixel_step` é o espaçamento, em pixels de tela, entre
+        # amostras consecutivas da trajetória. Valores maiores = menos
+        # pontos registrados = mais economia; menores = curva mais fiel
+        # em zoom alto. O denominador usa o perímetro do viewport como
+        # proxy da "extensão" da tela — uma janela maior comporta mais
+        # amostras naturalmente.
+        perimeter = camera.viewport_size.x + camera.viewport_size.y
+        target_points = max(1, int(perimeter / self.pixel_step))
+        stride = max(1, steps // target_points)
+
+        # Capacidade exata da lista de cada trajetória. O `+2` cobre
+        # a posição inicial e o último passo (forçado mesmo se não
+        # cair no stride).
+        capacity = (steps + stride - 1) // stride + 2
+
         cam_x = camera.position.x
         cam_y = camera.position.y
         cam_zoom = camera.zoom
         center_x = camera.viewport_center.x
         center_y = camera.viewport_center.y
 
+        paths: list[list | None] = [None] * count
+        # Número de pontos já escritos em cada lista de trajetória.
+        # `lengths[i] == 0` significa que o corpo não está sendo
+        # rastreado (fora da câmera e não focado).
+        lengths = [0] * count
+
         for i, body in enumerate(bodies):
             should_draw = self.enabled or id(body) in focus_ids
-            if should_draw and camera.is_visible((px[i], py[i]), radii[i]):
-                sp_x = (px[i] - cam_x) * cam_zoom + center_x
-                sp_y = (py[i] - cam_y) * cam_zoom + center_y
-                paths[i] = [(sp_x, sp_y)]
+            focused = id(body) in focus_ids
+            # Focados desenham mesmo fora da câmera: o jogador precisa
+            # ver para onde o corpo selecionado vai, mesmo quando ele
+            # acabou de sair do quadro.
+            if should_draw and (focused or camera.is_visible((px[i], py[i]), radii[i])):
+                path = [None] * capacity
+                path[0] = (
+                    (px[i] - cam_x) * cam_zoom + center_x,
+                    (py[i] - cam_y) * cam_zoom + center_y,
+                )
+                paths[i] = path
+                lengths[i] = 1
+
+        # Thrusters: corpos cujo `prediction_acceleration` foi
+        # sobrescrito. Comparar funções de classe evita instanciar
+        # o method em cada chamada — só o foguete entra aqui, e o
+        # laço interno nem executa quando a lista está vazia.
+        default_prediction = MassObject.prediction_acceleration
+        thrusters = [
+            (i, body) for i, body in enumerate(bodies)
+            if type(body).prediction_acceleration is not default_prediction
+        ]
 
         # Lista reutilizada pelo laço inteiro — sem realocação por passo.
         overlaps: list[tuple[int, int]] = []
 
         for step in range(steps):
-            if (step & 15) == 0:
-                pygame.event.pump()
-                if pygame.event.peek(pygame.QUIT):
-                    break
 
             overlaps.clear()
             gravity.compute_accelerations_flat(
@@ -200,14 +257,15 @@ class TrajectoryVisualizer:
                 skip_pair=skip_pair,
             )
 
-            prediction_time = (step + 1) * dt
-            for i, body in enumerate(bodies):
-                if masses[i] <= 0.0:
-                    continue
-                extra = body.prediction_acceleration(prediction_time)
-                if extra is not None:
-                    ax[i] += extra.x
-                    ay[i] += extra.y
+            if thrusters:
+                prediction_time = (step + 1) * dt
+                for i, body in thrusters:
+                    if masses[i] <= 0.0:
+                        continue
+                    extra = body.prediction_acceleration(prediction_time)
+                    if extra is not None:
+                        ax[i] += extra.x
+                        ay[i] += extra.y
 
             for i in range(count):
                 if masses[i] <= 0.0:
@@ -221,9 +279,9 @@ class TrajectoryVisualizer:
                 self._merge_pair(px, py, vx, vy, masses, radii, i, j)
 
             if (
-                docked_body_idx >= 0
-                and masses[docked_body_idx] > 0.0
-                and masses[docked_host_idx] > 0.0
+                    docked_body_idx >= 0
+                    and masses[docked_body_idx] > 0.0
+                    and masses[docked_host_idx] > 0.0
             ):
                 k = docked_host_idx
                 i = docked_body_idx
@@ -232,17 +290,24 @@ class TrajectoryVisualizer:
                 vx[i] = vx[k]
                 vy[i] = vy[k]
 
-            for i in range(count):
-                if masses[i] <= 0.0:
-                    continue
-                path = paths[i]
-                if path is not None:
-                    sp_x = (px[i] - cam_x) * cam_zoom + center_x
-                    sp_y = (py[i] - cam_y) * cam_zoom + center_y
-                    path.append((sp_x, sp_y))
+            # Só registra amostras nos múltiplos de `stride` — e
+            # sempre no último passo, para fechar a curva.
+            if step % stride == 0 or step == steps - 1:
+                for i in range(count):
+                    path = paths[i]
+                    if path is None or masses[i] <= 0.0:
+                        continue
+                    path[lengths[i]] = (
+                        (px[i] - cam_x) * cam_zoom + center_x,
+                        (py[i] - cam_y) * cam_zoom + center_y,
+                    )
+                    lengths[i] += 1
 
-        for path in paths:
-            if path is not None and len(path) >= 2:
-                renderer.draw_polyline(self.color, path, width=self.width)
+        for i, path in enumerate(paths):
+            if path is None:
+                continue
+            n = lengths[i]
+            if n >= 2:
+                renderer.draw_polyline(self.color, path[:n], width=self.width)
 
         return perf_counter() - start

@@ -8,6 +8,7 @@ from src.config import Configs, SimulationConfig
 from src.engine.application import Application
 from src.engine.vector_visualizer import VectorVisualizer
 from src.engine.trajectory_visualizer import TrajectoryVisualizer
+from src.engine.orbit_visualizer import OrbitVisualizer
 from src.engine.world import World
 from src.entities.massobject import MassObject
 from src.physics.gravity import NewtonianGravity
@@ -45,26 +46,26 @@ class Gravitation(Application):
     )
 
     # --- Estrelas -----------------------------------------------------
-    _STAR_COUNT_RANGE = (1, 2)
+    _STAR_COUNT_RANGE = (1, 1)
     _STAR_MASS_RANGE = (3_000_000.0, 6_000_000.0)
     _STAR_RADIUS_RANGE = (700.0, 1000.0)
     _STAR_ORBIT_RADIUS_RANGE = (1200.0, 2000.0)
 
     # --- Planetas -----------------------------------------------------
-    _PLANET_COUNT_RANGE = (2, 5)
+    _PLANET_COUNT_RANGE = (0, 0)
     _PLANET_MASS_RANGE = (20_000.0, 60_000.0)
     _PLANET_RADIUS_RANGE = (100.0, 140.0)
-    _PLANET_BASE_ORBIT_FACTOR = 2.0
+    _PLANET_BASE_ORBIT_FACTOR = 4.0
     _PLANET_ORBIT_STEP_FACTOR = 1.0
 
     # --- Luas ---------------------------------------------------------
-    _MOON_COUNT_RANGE = (0, 2)
+    _MOON_COUNT_RANGE = (0, 0)
     _MOON_MASS_RANGE = (300.0, 800.0)
     _MOON_RADIUS_RANGE = (22.0, 35.0)
     _MOON_ORBIT_FACTOR_RANGE = (3.5, 6.0)
 
     # --- Meteoros -----------------------------------------------------
-    _METEOR_COUNT_RANGE = (1, 3)
+    _METEOR_COUNT_RANGE = (0, 0)
     _METEOR_MASS_RANGE = (10.0, 40.0)
     _METEOR_RADIUS_RANGE = (4.0, 8.0)
     _METEOR_ECCENTRICITY_RANGE = (0.6, 0.9)
@@ -76,7 +77,8 @@ class Gravitation(Application):
     _ROCKET_BODY_WIDTH = 7.0
     _ROCKET_NOSE_LENGTH = 9.0
     _ROCKET_MASS = 40.0
-    _ROCKET_THRUST_ACCELERATION = 1500.0
+    _ROCKET_THRUST_ACCELERATION = 800.0
+    _WIDGET_AXIS_COLOR = (70, 70, 85)
 
     # Comprimento máximo, em pixels de tela, de uma seta de força.
     # Vale como teto de saturação: forças maiores que a referência do
@@ -115,6 +117,11 @@ class Gravitation(Application):
         self.future_trajectory = TrajectoryVisualizer(
             steps=sim_config.future_trajectory_steps,
             color=(170, 170, 255),
+        )
+        self.orbit_visualizer = OrbitVisualizer(
+            color=(230, 30, 30),
+            width=2,
+            orbit_count=6,
         )
         self.entity_picker = EntityPicker()
         self.inspector = Inspector()
@@ -306,10 +313,13 @@ class Gravitation(Application):
 
             InspectionProperty(
                 "Ângulo",
-                lambda rocket: math.degrees(
-                    rocket.angle
-                ),
+                # `rocket.angle` segue a convenção de `atan2(y, x)` em
+                # que Y cresce para baixo (pygame). Invertemos o sinal
+                # na exibição para o referencial usual: bico para cima
+                # vira +90°, bico para a direita fica 0°.
+                lambda rocket: -math.degrees(rocket.angle),
                 lambda value: f"{value:.2f}°",
+                widget=self._draw_rocket_widget,
             ),
 
             InspectionProperty(
@@ -331,6 +341,82 @@ class Gravitation(Application):
                 ),
             ),
         )
+
+    def _draw_rocket_widget(
+        self,
+        rocket,
+        renderer,
+        rect,
+    ) -> None:
+        """Desenha um ícone do foguete orientado pelo ângulo atual.
+
+        O comprimento total do foguete é escalado para caber no lado
+        menor do `rect` com folga. A orientação usa `rocket.angle`
+        diretamente — o mesmo referencial do `Rocket.render`, então o
+        ícone nunca contradiz o que está na cena.
+
+        Duas linhas cruzadas ao centro servem de referencial de
+        direção: a horizontal indica o eixo X (0°), a vertical
+        indica o eixo Y (90° no referencial exibido). São desenhadas
+        antes do foguete, então ficam atrás dele.
+        """
+        total_length = rocket.body_length + rocket.nose_length
+        available = min(rect.width, rect.height) - 8
+
+        if available <= 0 or total_length <= 0:
+            return
+
+        cx = rect.x + rect.width * 0.5
+        cy = rect.y + rect.height * 0.5
+
+        # Referencial de direção: linhas nos eixos X e Y, com margem
+        # curta nas pontas para não colar nas bordas do rect.
+        margin = 4
+        renderer.draw_line(
+            self._WIDGET_AXIS_COLOR,
+            (rect.x + margin, cy),
+            (rect.right - margin, cy),
+            width=1,
+        )
+        renderer.draw_line(
+            self._WIDGET_AXIS_COLOR,
+            (cx, rect.y + margin),
+            (cx, rect.bottom - margin),
+            width=1,
+        )
+
+        scale = available / total_length
+
+        body_l = rocket.body_length * scale
+        body_w = rocket.body_width * scale
+        nose_l = rocket.nose_length * scale
+
+        cos_a = math.cos(rocket.angle)
+        sin_a = math.sin(rocket.angle)
+
+        half_l = body_l * 0.5
+        half_w = body_w * 0.5
+
+        def transform(lx: float, ly: float) -> tuple[float, float]:
+            return (
+                cx + lx * cos_a - ly * sin_a,
+                cy + lx * sin_a + ly * cos_a,
+            )
+
+        body_points = (
+            transform(-half_l, -half_w),
+            transform(half_l, -half_w),
+            transform(half_l, half_w),
+            transform(-half_l, half_w),
+        )
+        nose_points = (
+            transform(half_l, -half_w),
+            transform(half_l + nose_l, 0.0),
+            transform(half_l, half_w),
+        )
+
+        renderer.draw_polygon(rocket.color, body_points)
+        renderer.draw_polygon(rocket.nose_color, nose_points)
 
     # -- Internos -----------------------------------------------------
 
@@ -361,7 +447,7 @@ class Gravitation(Application):
         self._spawn_meteors(stars, planets)
 
         # Foguete nasce acoplado a um planeta sorteado.
-        host = random.choice(planets)
+        host = random.choice(planets) if len(planets) != 0 else None
         self._spawn_rocket(host)
 
     def _spawn_stars(
@@ -562,7 +648,7 @@ class Gravitation(Application):
             )
             self.world.add(meteor)
 
-    def _spawn_rocket(self, host: MassObject) -> None:
+    def _spawn_rocket(self, host: MassObject | None) -> None:
         """Cria o foguete acoplado à superfície de `host`."""
         angle = random.uniform(0.0, 2.0 * math.pi)
 
@@ -580,7 +666,8 @@ class Gravitation(Application):
             nose_color=(240, 110, 80),
         )
         self.world.add(self.rocket)
-        self.rocket.dock_to(host, angle)
+        if host is not None:
+            self.rocket.dock_to(host, angle)
 
     def _resolve_merges(self) -> None:
         """Funde pares sobrepostos que estejam se aproximando rápido.
@@ -649,6 +736,9 @@ class Gravitation(Application):
 
         if self.input.was_pressed(pygame.K_t):
             self.future_trajectory.toggle()
+
+        if self.input.was_pressed(pygame.K_o):
+            self.orbit_visualizer.toggle()
 
         if self.input.was_pressed(pygame.K_v):
             self.following = (
@@ -760,7 +850,8 @@ class Gravitation(Application):
             body.post_integrate()
 
         for body, acceleration in zip(bodies, accelerations):
-            body.last_force.update(acceleration * body.mass)
+            body.last_force.update(acceleration)
+            body.last_force *= body.mass
 
         self._resolve_merges()
         self.world.purge_inactive()
@@ -769,9 +860,40 @@ class Gravitation(Application):
         """Desenha a `World` com o alpha de interpolação atual."""
         alpha = self.clock.interpolation_alpha
 
+        selected = self.inspector.selected
+        reference: AnyGrav = self.relation_inspector.reference
+        trajectory_focus = (
+            (selected,)
+            if isinstance(
+                selected,
+                Rocket,
+            )
+            else ()
+        )
+
+        if selected is not None:
+            selected.render_selection(
+                renderer,
+                self.camera,
+                alpha,
+                color=(255, 255, 255),
+            )
+
+        if (
+                selected is not None
+                and reference is not None
+                and reference is not selected
+        ):
+            reference.render_selection(
+                renderer,
+                self.camera,
+                alpha,
+                color=(255, 190, 70),
+            )
+
         force_time = 0.0
         if self.force_vectors.enabled:
-            start_force = perf_counter()
+            force_time = perf_counter()
 
             # Materializa a lista uma vez. O generator do world é
             # esgotável, e precisamos de duas passadas: uma para achar
@@ -812,56 +934,39 @@ class Gravitation(Application):
                         max_screen_length=self.FORCE_VECTOR_SCREEN_LENGTH,
                     )
 
-            force_time = perf_counter() - start_force
+            force_time = perf_counter() - force_time
 
-        selected = self.inspector.selected
-        reference: AnyGrav = self.relation_inspector.reference
-        trajectory_focus = (
-            (selected,)
-            if isinstance(
-                selected,
-                Rocket,
-            )
-            else ()
-        )
-        trajectory_time = 0
-        if self.future_trajectory.enabled:
+        trajectory_time = 0.0
+        if self.future_trajectory.enabled or isinstance(selected, Rocket):
             trajectory_time = (
-                    self.future_trajectory.draw(
-                        renderer,
-                        self.camera,
-                        self.world.entities,
-                        self.gravity,
-                        self.clock.fixed_timestep,
-                        focus_entities=trajectory_focus,
-                    )
+                self.future_trajectory.draw(
+                    renderer,
+                    self.camera,
+                    self.world.entities,
+                    self.gravity,
+                    self.clock.fixed_timestep,
+                    focus_entities=trajectory_focus,
+                )
             )
+
+        orbit_time = 0.0
+        if self.orbit_visualizer.enabled:
+            orbit_time = perf_counter()
+
+            self.orbit_visualizer.draw(
+                renderer,
+                self.camera,
+                self.world.entities,
+                max_radius=self.sim_config.world_width * 0.45,
+            )
+
+            orbit_time = perf_counter() - orbit_time
 
         self.world.render(
             renderer,
             self.camera,
             alpha,
         )
-
-        if selected is not None:
-            selected.render_selection(
-                renderer,
-                self.camera,
-                alpha,
-                color=(255, 255, 255),
-            )
-
-        if (
-            selected is not None
-            and reference is not None
-            and reference is not selected
-        ):
-            reference.render_selection(
-                renderer,
-                self.camera,
-                alpha,
-                color=(255, 190, 70),
-            )
 
         # ------------------------------------------------------
         # Apresentação de HUD
@@ -870,6 +975,19 @@ class Gravitation(Application):
             renderer,
             self.inspector,
             self.relation_inspector,
+        )
+
+        orbit_action = (
+            "ocultar"
+            if self.orbit_visualizer.enabled
+            else "ver"
+        )
+
+        renderer.draw_text(
+            f"Pressione O para {orbit_action} as órbitas circulares{': {:.2f}ms'.format(orbit_time * 1000) if self.orbit_visualizer.enabled else ''}",
+            (5, self.config.height - 115),
+            size=25,
+            color=(255, 255, 255),
         )
 
         force_action = (
@@ -905,7 +1023,7 @@ class Gravitation(Application):
         )
 
         renderer.draw_text(
-            f"Pressione T para {trajectory_action} a trajetória futura{': {:.2f}ms'.format(trajectory_time * 1000) if self.future_trajectory.enabled else ''}",
+            f"Pressione T para {trajectory_action} a trajetória futura{': {:.2f}ms'.format(trajectory_time * 1000) if trajectory_time != 0.0 else ''}",
             (5, self.config.height - 25),
             size=25,
             color=(255, 255, 255),

@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-
+from src.entities.massobject import MassObject
 import pygame
 
 from src.physics.integrator import AccelerationModel
@@ -11,6 +11,7 @@ class CompositeAccelerationModel:
     __slots__ = (
         "base_model",
         "bodies",
+        "_thrusters"
     )
 
     def __init__(
@@ -20,6 +21,11 @@ class CompositeAccelerationModel:
     ) -> None:
         self.base_model = base_model
         self.bodies = bodies
+        default = MassObject.additional_acceleration
+        self._thrusters = [
+            (i, body) for i, body in enumerate(bodies)
+            if type(body).additional_acceleration is not default
+        ]
 
     def compute_accelerations(
         self,
@@ -35,12 +41,8 @@ class CompositeAccelerationModel:
             )
         )
 
-        for i, body in enumerate(self.bodies):
-            extra = body.additional_acceleration(
-                positions[i],
-                velocities[i],
-            )
-
+        for i, body in self._thrusters:
+            extra = body.additional_acceleration(positions[i], velocities[i])
             if extra is not None:
                 accelerations[i] += extra
 

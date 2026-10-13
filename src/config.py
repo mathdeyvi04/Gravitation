@@ -83,4 +83,4 @@ class SimulationConfig:
     # que permite o foguete repousar sobre um planeta sem ser absorvido.
     merge_min_relative_speed: float = 12.0
 
-    future_trajectory_steps: int = 1000
+    future_trajectory_steps: int = 10000
