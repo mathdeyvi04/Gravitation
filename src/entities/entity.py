@@ -152,3 +152,14 @@ class Entity(ABC):
         desenhar algo em volta (anel, caixa, contorno). A `Application`
         chama este method no `render` quando a entidade é a selecionada.
         """
+
+    def post_integrate(self) -> None:
+        """Hook chamado após o passo de integração, no timestep fixo.
+
+        A integração (RK4) escreve diretamente em `position` e
+        `velocity` dos corpos, ignorando qualquer lógica de subclasse.
+        Entidades que precisam reajustar o próprio estado depois da
+        integração — como um foguete acoplado, cuja posição deve
+        acompanhar o hospedeiro — sobrescrevem este método. No-op por
+        padrão.
+        """

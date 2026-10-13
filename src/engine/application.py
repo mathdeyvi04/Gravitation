@@ -48,7 +48,7 @@ class Application(ABC):
         self.background = Background(
             path=config.background_path,
             window_size=(config.width, config.height),
-            parallax=0.2
+            parallax=0.05
         )
 
     def run(self) -> None:

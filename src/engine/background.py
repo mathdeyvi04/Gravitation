@@ -88,8 +88,8 @@ class Background:
         self._last_cam_x = cx
         self._last_cam_y = cy
 
-        self._offset_x = -(cx * self._parallax) % self._tile_w
-        self._offset_y = -(cy * self._parallax) % self._tile_h
+        self._offset_x = (cx * self._parallax) % self._tile_w
+        self._offset_y = (cy * self._parallax) % self._tile_h
 
     def draw(self, renderer: Renderer) -> None:
         """Blita o mosaico cobrindo a tela inteira."""

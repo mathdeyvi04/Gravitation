@@ -13,8 +13,11 @@ class Camera2D:
     A câmera não desenha nada e não modifica os objetos do mundo.
     """
 
-    # Limites de zoom para evitar que a roda deixe a câmera inutilizável.
-    MIN_ZOOM: float = 0.1
+    # Limites de zoom. O mínimo é escolhido para que, com o viewport
+    # atual (1500×1000), caibam o sistema estelar inteiro e uma boa
+    # margem de vazio ao redor. O máximo permite inspecionar o foguete
+    # com folga.
+    MIN_ZOOM: float = 0.001
     MAX_ZOOM: float = 10.0
 
     def __init__(

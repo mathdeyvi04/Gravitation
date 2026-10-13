@@ -1,6 +1,8 @@
 import math
 from typing import Optional
+
 import pygame
+
 from src.config import SimulationConfig
 from src.engine.camera import Camera2D
 from src.engine.renderer import Renderer
@@ -8,7 +10,14 @@ from src.entities.massobject import MassObject
 
 
 class Rocket(MassObject):
-    """Corpo controlável com orientação, rotação e propulsão."""
+    """Corpo controlável com orientação, rotação e propulsão.
+
+    O foguete pode estar **acoplado** a um hospedeiro (`docked_to`).
+    Enquanto acoplado, sua posição e velocidade acompanham o hospedeiro
+    a cada passo fixo e a rotação é fixada na direção radial — como se
+    estivesse pousado na superfície. Qualquer comando do jogador
+    (rotação ou empuxo) desacopla.
+    """
 
     __slots__ = (
         "angle",
@@ -21,10 +30,17 @@ class Rocket(MassObject):
         "body_width",
         "nose_length",
         "nose_color",
+        "docked_to",
+        "docking_angle",
     )
 
     ROCKET_COLOR = (220, 220, 230)
     NOSE_COLOR = (240, 110, 80)
+
+    # Folga entre a superfície do hospedeiro e a extremidade traseira
+    # do foguete, em unidades de mundo. Evita que os círculos de
+    # colisão se toquem tangencialmente logo no primeiro frame.
+    DOCKING_MARGIN = 2.0
 
     def __init__(
         self,
@@ -33,11 +49,11 @@ class Rocket(MassObject):
         position: pygame.Vector2,
         velocity: Optional[pygame.Vector2] = None,
         angle: float = -math.pi * 0.5,
-        body_length: float = 34.0,
-        body_width: float = 16.0,
-        nose_length: float = 18.0,
+        body_length: float = 24.0,
+        body_width: float = 10.0,
+        nose_length: float = 12.0,
         rotation_speed: float = math.radians(120.0),
-        thrust_acceleration: float = 90.0,
+        thrust_acceleration: float = 120.0,
         color: tuple[int, int, int] = ROCKET_COLOR,
         nose_color: tuple[int, int, int] = NOSE_COLOR,
     ) -> None:
@@ -74,6 +90,66 @@ class Rocket(MassObject):
 
         self.nose_color = nose_color
 
+        self.docked_to: Optional[MassObject] = None
+        self.docking_angle: float = 0.0
+
+    # -- Acoplamento ---------------------------------------------------
+
+    def dock_to(self, host: MassObject, angle: float) -> None:
+        """Acopla o foguete à superfície de `host`, no ângulo `angle`.
+
+        `angle` é a direção radial (em world_space) do centro do
+        hospedeiro até o foguete. O bico nasce apontando nessa mesma
+        direção — o foguete aparece “de pé” sobre a superfície.
+        """
+        self.docked_to = host
+        self.docking_angle = float(angle)
+        self.angle = self.docking_angle
+        self.previous_angle = self.angle
+        self._sync_to_host()
+
+    def undock(self) -> None:
+        """Desacopla o foguete, deixando-o sob controle pleno."""
+        self.docked_to = None
+
+    def _sync_to_host(self) -> None:
+        """Ajusta posição e velocidade para o estado do hospedeiro.
+
+        Não toca em `self.angle` — a orientação é controlada pelo
+        jogador via `fixed_update`, mesmo enquanto acoplado. É o que
+        permite girar o foguete sobre a superfície sem que ele caia.
+        """
+        host = self.docked_to
+        if host is None:
+            return
+
+        radial = pygame.Vector2(
+            math.cos(self.docking_angle),
+            math.sin(self.docking_angle),
+        )
+        distance = host.radius + self.body_length * 0.5 + self.DOCKING_MARGIN
+
+        self.position.update(host.position + radial * distance)
+        self.previous_position.update(self.position)
+        self.velocity.update(host.velocity)
+
+    def post_integrate(self) -> None:
+        """Re-sincroniza com o hospedeiro após o passo de integração.
+
+        RK4 escreve em `position` e `velocity` uniformemente, sem saber
+        do acoplamento. Reposicionamos aqui para que o foguete continue
+        “grudado” na superfície. Se o hospedeiro foi destruído (por
+        fusão), desacopla e segue livre.
+        """
+        if self.docked_to is None:
+            return
+        if not self.docked_to.active:
+            self.docked_to = None
+            return
+        self._sync_to_host()
+
+    # -- Física --------------------------------------------------------
+
     @property
     def forward(self) -> pygame.Vector2:
         """Direção do bico em world_space."""
@@ -83,25 +159,37 @@ class Rocket(MassObject):
         )
 
     def set_control(
-        self,
-        rotation_input: int,
-        thrusting: bool,
+            self,
+            rotation_input: int,
+            thrusting: bool,
     ) -> None:
-        self.rotation_input = max(
-            -1,
-            min(1, int(rotation_input)),
-        )
+        """Aplica comandos do jogador.
+
+        Girar enquanto acoplado apenas muda a orientação do foguete —
+        ele permanece pousado. Só o empuxo desacopla. Isso permite ao
+        jogador mirar o bico antes de decolar, sem risco de cair sobre
+        o planeta por causa do tempo gasto girando.
+        """
+        if self.docked_to is not None and thrusting:
+            self._sync_to_host()
+            self.undock()
+
+        self.rotation_input = max(-1, min(1, int(rotation_input)))
         self.thrusting = bool(thrusting)
 
     def fixed_update(self, fixed_delta_time: float) -> None:
-        """Atualiza a orientação usando o timestep fixo."""
+        """Atualiza a orientação própria do foguete.
 
+        Roda tanto acoplado quanto livre: o jogador precisa poder mirar
+        o bico antes de decolar. A posição, quando acoplado, é
+        restaurada em `post_integrate` por `_sync_to_host`.
+        """
         self.previous_angle = self.angle
 
         self.angle += (
-            self.rotation_input
-            * self.rotation_speed
-            * fixed_delta_time
+                self.rotation_input
+                * self.rotation_speed
+                * fixed_delta_time
         )
 
         self.angle = math.atan2(
@@ -115,13 +203,13 @@ class Rocket(MassObject):
         velocity: pygame.Vector2,
     ) -> Optional[pygame.Vector2]:
         """Retorna a aceleração produzida pelo motor."""
-
+        if self.docked_to is not None:
+            return None
         if (
             not self.thrusting
             or self.thrust_acceleration <= 0.0
         ):
             return None
-
         return self.forward * self.thrust_acceleration
 
     def prediction_acceleration(
@@ -129,7 +217,8 @@ class Rocket(MassObject):
         elapsed_time: float,
     ) -> Optional[pygame.Vector2]:
         """Aceleração do motor durante uma previsão futura."""
-
+        if self.docked_to is not None:
+            return None
         if (
             not self.thrusting
             or self.thrust_acceleration <= 0.0
@@ -147,6 +236,51 @@ class Rocket(MassObject):
             math.cos(predicted_angle),
             math.sin(predicted_angle),
         ) * self.thrust_acceleration
+
+    # -- Colisão multi-círculo -----------------------------------------
+
+    def collision_circles(
+        self,
+        alpha: float = 1.0,
+    ) -> tuple[tuple[pygame.Vector2, float], ...]:
+        """Quatro círculos alinhados ao eixo do foguete.
+
+        Todos têm raio igual à meia-largura do corpo, então tangenciam
+        as laterais do retângulo. Quatro centros cobrem a extensão
+        total (traseira, meio, frente, bico) sem deixar vão.
+        """
+        position = (
+            self.previous_position.lerp(self.position, alpha)
+            if alpha < 1.0
+            else self.position
+        )
+        angle = self._interpolated_angle(alpha)
+
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+
+        half_length = self.body_length * 0.5
+        radius = self.body_width * 0.5
+
+        local_xs = (
+            -half_length + radius,
+            0.0,
+            half_length - radius,
+            half_length + self.nose_length - radius,
+        )
+
+        return tuple(
+            (
+                pygame.Vector2(
+                    position.x + lx * cos_a,
+                    position.y + lx * sin_a,
+                ),
+                radius,
+            )
+            for lx in local_xs
+        )
+
+    # -- Interpolação e geometria auxiliar ----------------------------
 
     def _interpolated_angle(self, alpha: float) -> float:
         if alpha >= 1.0:
@@ -180,12 +314,8 @@ class Rocket(MassObject):
 
         return [
             pygame.Vector2(
-                position.x
-                + point.x * cos_angle
-                - point.y * sin_angle,
-                position.y
-                + point.x * sin_angle
-                + point.y * cos_angle,
+                position.x + point.x * cos_angle - point.y * sin_angle,
+                position.y + point.x * sin_angle + point.y * cos_angle,
             )
             for point in local_points
         ]
@@ -199,18 +329,9 @@ class Rocket(MassObject):
         half_width = self.body_width * 0.5
 
         local_points = (
-            pygame.Vector2(
-                half_length,
-                -half_width,
-            ),
-            pygame.Vector2(
-                half_length + self.nose_length,
-                0.0,
-            ),
-            pygame.Vector2(
-                half_length,
-                half_width,
-            ),
+            pygame.Vector2(half_length, -half_width),
+            pygame.Vector2(half_length + self.nose_length, 0.0),
+            pygame.Vector2(half_length, half_width),
         )
 
         cos_angle = math.cos(angle)
@@ -218,12 +339,8 @@ class Rocket(MassObject):
 
         return [
             pygame.Vector2(
-                position.x
-                + point.x * cos_angle
-                - point.y * sin_angle,
-                position.y
-                + point.x * sin_angle
-                + point.y * cos_angle,
+                position.x + point.x * cos_angle - point.y * sin_angle,
+                position.y + point.x * sin_angle + point.y * cos_angle,
             )
             for point in local_points
         ]
@@ -250,15 +367,13 @@ class Rocket(MassObject):
 
         return [
             pygame.Vector2(
-                position.x
-                + point.x * cos_angle
-                - point.y * sin_angle,
-                position.y
-                + point.x * sin_angle
-                + point.y * cos_angle,
+                position.x + point.x * cos_angle - point.y * sin_angle,
+                position.y + point.x * sin_angle + point.y * cos_angle,
             )
             for point in local_points
         ]
+
+    # -- Render --------------------------------------------------------
 
     def render(
         self,
@@ -267,10 +382,7 @@ class Rocket(MassObject):
         alpha: float = 1.0,
     ) -> None:
         position = (
-            self.previous_position.lerp(
-                self.position,
-                alpha,
-            )
+            self.previous_position.lerp(self.position, alpha)
             if alpha < 1.0
             else self.position
         )
@@ -282,49 +394,29 @@ class Rocket(MassObject):
 
         body = [
             camera.world_to_screen(point)
-            for point in self._world_body_rectangle(
-                position,
-                angle,
-            )
+            for point in self._world_body_rectangle(position, angle)
         ]
 
         nose = [
             camera.world_to_screen(point)
-            for point in self._world_nose_triangle(
-                position,
-                angle,
-            )
+            for point in self._world_nose_triangle(position, angle)
         ]
 
-        renderer.draw_polygon(
-            self.color,
-            body,
-        )
-
-        renderer.draw_polygon(
-            self.nose_color,
-            nose,
-        )
+        renderer.draw_polygon(self.color, body)
+        renderer.draw_polygon(self.nose_color, nose)
 
     def get_world_bounds(
         self,
         alpha: float = 1.0,
     ) -> tuple[float, float, float, float]:
         position = (
-            self.previous_position.lerp(
-                self.position,
-                alpha,
-            )
+            self.previous_position.lerp(self.position, alpha)
             if alpha < 1.0
             else self.position
         )
 
         angle = self._interpolated_angle(alpha)
-
-        points = self._world_polygon(
-            position,
-            angle,
-        )
+        points = self._world_polygon(position, angle)
 
         xs = [point.x for point in points]
         ys = [point.y for point in points]
@@ -336,55 +428,7 @@ class Rocket(MassObject):
             max(ys),
         )
 
-
-    def collision_circles(
-        self,
-        alpha: float = 1.0,
-    ) -> tuple[tuple[pygame.Vector2, float], ...]:
-        """Quatro círculos alinhados ao eixo do foguete.
-
-        Cada círculo tem raio igual à meia-largura do corpo
-        (`body_width / 2`), então eles tangenciam as laterais do
-        retângulo. Quatro centros cobrem a extensão total sem deixar
-        vão:
-
-        - traseiro: encosta na traseira do corpo;
-        - central: preenche o meio do retângulo (sem ele haveria uma
-          lacuna onde dois círculos consecutivos não se sobrepõem);
-        - frontal: encosta na base do bico;
-        - bico: recuado um raio a partir da ponta, cobre o triângulo
-          com uma sobre-aproximação lateral pequena e aceitável.
-        """
-        position = (
-            self.previous_position.lerp(self.position, alpha)
-            if alpha < 1.0
-            else self.position
-        )
-        angle = self._interpolated_angle(alpha)
-
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-
-        half_length = self.body_length * 0.5
-        radius = self.body_width * 0.5
-
-        local_xs = (
-            -half_length + radius,
-            0.0,
-            half_length - radius,
-            half_length + self.nose_length - radius,
-        )
-
-        return tuple(
-            (
-                pygame.Vector2(
-                    position.x + lx * cos_a,
-                    position.y + lx * sin_a,
-                ),
-                radius,
-            )
-            for lx in local_xs
-        )
+    # -- Picking -------------------------------------------------------
 
     def _to_local(
         self,
@@ -392,26 +436,19 @@ class Rocket(MassObject):
         alpha: float,
     ) -> pygame.Vector2:
         position = (
-            self.previous_position.lerp(
-                self.position,
-                alpha,
-            )
+            self.previous_position.lerp(self.position, alpha)
             if alpha < 1.0
             else self.position
         )
-
         angle = self._interpolated_angle(alpha)
-
         delta = world_position - position
 
         cos_angle = math.cos(angle)
         sin_angle = math.sin(angle)
 
         return pygame.Vector2(
-            delta.x * cos_angle
-            + delta.y * sin_angle,
-            -delta.x * sin_angle
-            + delta.y * cos_angle,
+            delta.x * cos_angle + delta.y * sin_angle,
+            -delta.x * sin_angle + delta.y * cos_angle,
         )
 
     @staticmethod
@@ -421,44 +458,17 @@ class Rocket(MassObject):
         b: pygame.Vector2,
         c: pygame.Vector2,
     ) -> bool:
-        def cross(
-            p1: pygame.Vector2,
-            p2: pygame.Vector2,
-        ) -> float:
-            return (
-                p1.x * p2.y
-                - p1.y * p2.x
-            )
+        def cross(p1: pygame.Vector2, p2: pygame.Vector2) -> float:
+            return p1.x * p2.y - p1.y * p2.x
 
-        d1 = cross(
-            b - a,
-            point - a,
-        )
-        d2 = cross(
-            c - b,
-            point - b,
-        )
-        d3 = cross(
-            a - c,
-            point - c,
-        )
+        d1 = cross(b - a, point - a)
+        d2 = cross(c - b, point - b)
+        d3 = cross(a - c, point - c)
 
-        has_negative = (
-            d1 < 0.0
-            or d2 < 0.0
-            or d3 < 0.0
-        )
+        has_negative = d1 < 0.0 or d2 < 0.0 or d3 < 0.0
+        has_positive = d1 > 0.0 or d2 > 0.0 or d3 > 0.0
 
-        has_positive = (
-            d1 > 0.0
-            or d2 > 0.0
-            or d3 > 0.0
-        )
-
-        return not (
-            has_negative
-            and has_positive
-        )
+        return not (has_negative and has_positive)
 
     @staticmethod
     def _distance_to_segment(
@@ -476,13 +486,11 @@ class Rocket(MassObject):
             0.0,
             min(
                 1.0,
-                (point - a).dot(segment)
-                / length_squared,
+                (point - a).dot(segment) / length_squared,
             ),
         )
 
         projection = a + segment * t
-
         return point.distance_to(projection)
 
     def hit_test(
@@ -490,10 +498,7 @@ class Rocket(MassObject):
         world_position: pygame.Vector2,
         alpha: float = 1.0,
     ) -> bool:
-        point = self._to_local(
-            world_position,
-            alpha,
-        )
+        point = self._to_local(world_position, alpha)
 
         half_length = self.body_length * 0.5
         half_width = self.body_width * 0.5
@@ -504,78 +509,39 @@ class Rocket(MassObject):
         ):
             return True
 
-        a = pygame.Vector2(
-            half_length,
-            -half_width,
-        )
+        a = pygame.Vector2(half_length, -half_width)
+        b = pygame.Vector2(half_length + self.nose_length, 0.0)
+        c = pygame.Vector2(half_length, half_width)
 
-        b = pygame.Vector2(
-            half_length + self.nose_length,
-            0.0,
-        )
-
-        c = pygame.Vector2(
-            half_length,
-            half_width,
-        )
-
-        return self._point_in_triangle(
-            point,
-            a,
-            b,
-            c,
-        )
+        return self._point_in_triangle(point, a, b, c)
 
     def click_distance(
         self,
         world_position: pygame.Vector2,
         alpha: float = 1.0,
     ) -> float:
-        if self.hit_test(
-            world_position,
-            alpha,
-        ):
+        if self.hit_test(world_position, alpha):
             return 0.0
 
-        point = self._to_local(
-            world_position,
-            alpha,
-        )
+        point = self._to_local(world_position, alpha)
 
         half_length = self.body_length * 0.5
         half_width = self.body_width * 0.5
         tip_x = half_length + self.nose_length
 
         polygon = (
-            pygame.Vector2(
-                -half_length,
-                -half_width,
-            ),
-            pygame.Vector2(
-                half_length,
-                -half_width,
-            ),
-            pygame.Vector2(
-                tip_x,
-                0.0,
-            ),
-            pygame.Vector2(
-                half_length,
-                half_width,
-            ),
-            pygame.Vector2(
-                -half_length,
-                half_width,
-            ),
+            pygame.Vector2(-half_length, -half_width),
+            pygame.Vector2(half_length, -half_width),
+            pygame.Vector2(tip_x, 0.0),
+            pygame.Vector2(half_length, half_width),
+            pygame.Vector2(-half_length, half_width),
         )
 
         return min(
             self._distance_to_segment(
                 point,
                 polygon[i],
-                polygon[
-                    (i + 1) % len(polygon)
-                ],
+                polygon[(i + 1) % len(polygon)],
             )
             for i in range(len(polygon))
         )

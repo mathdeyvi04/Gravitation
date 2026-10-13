@@ -51,35 +51,36 @@ class SimulationConfig:
     Lida pelos corpos (`MassObject`) e pelo sistema de N-corpos. Não
     contém nada relativo à janela ou ao loop — trocar a simulação
     significa trocar esta instância, não o restante da aplicação.
+
+    A escala é pensada para que a cena caiba em tela com zoom moderado
+    e a hierarquia estelar seja visível: estrela ≫ planeta ≫ lua ≫
+    meteoro ≫ foguete.
     """
 
     # --- Mundo --------------------------------------------------------
 
     # Dimensões do espaço em unidades de mundo (não pixels).
-    # A câmera decide quanto do mundo cabe na tela.
-    world_width: float = 2000.0
-    world_height: float = 2000.0
+    world_width: float = 10000.0
+    world_height: float = 10000.0
 
     # --- Geração aleatória de corpos ---------------------------------
 
-    # Faixas (mínimo, máximo) usadas quando `MassObject` recebe `None`.
-    # `mass_range` e `radius_range` são lidas em conjunto: se só a massa
-    # é informada, o raio é derivado dela por r ∝ m^(1/3).
     mass_range: tuple[float, float] = (1.0, 50.0)
     radius_range: tuple[float, float] = (4.0, 20.0)
     velocity_range: tuple[float, float] = (0.0, 30.0)
 
     # --- Física -------------------------------------------------------
 
-    # Constante gravitacional em unidades arbitrárias do mundo.
-    # Ajuste junto com as massas para obter a escala de tempo desejada.
     gravitational_constant: float = 200.0
 
-    # Suavização de Plummer aplicada no cálculo da gravidade.
-    # Evita forças explodirem quando dois corpos se aproximam muito.
-    # Use 0.0 para desligar (comportamento newtoniano puro).
-    gravitational_softening: float = 1.0
+    # Softening proporcional aos menores corpos (meteoros, raio 4–8).
+    # Mantém a força finita quando duas formas pequenas se tocam, sem
+    # interferir na dinâmica estelar (raios na casa das centenas).
+    gravitational_softening: float = 12.0
 
-    # Quantidade máxima de passos fixos usados na previsão
-    # da trajetória futura.
+    # Velocidade relativa mínima para fundir duas formas em contato.
+    # Abaixo disso, a sobreposição é tratada como contato suave: é o
+    # que permite o foguete repousar sobre um planeta sem ser absorvido.
+    merge_min_relative_speed: float = 12.0
+
     future_trajectory_steps: int = 1000

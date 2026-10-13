@@ -35,35 +35,52 @@ class VectorVisualizer:
         self.enabled = not self.enabled
 
     def draw(
-        self,
-        renderer: Renderer,
-        camera: Camera2D,
-        origin: pygame.Vector2,
-        vector: pygame.Vector2,
-        scale: float = 1.0,
+            self,
+            renderer: Renderer,
+            camera: Camera2D,
+            origin: pygame.Vector2,
+            vector: pygame.Vector2,
+            reference_scale: float,
+            max_screen_length: float = 120.0,
     ) -> None:
-        """
-        Desenha um vetor cujo início está em `origin`.
+        """Desenha um vetor cujo início está em `origin`.
 
-        Tanto `origin` quanto `vector` estão em world_space.
-        """
+        `origin` e `vector` estão em world_space. O comprimento em
+        tela é ancorado em **pixels**: a magnitude `reference_scale`
+        vira `max_screen_length` pixels, e forças maiores saturam
+        nesse teto. Como o resultado independe do zoom, a seta mantém
+        a mesma presença visual em qualquer nível de aproximação — e
+        nunca ultrapassa `max_screen_length` pixels.
 
+        `reference_scale` é o valor de força que o chamador considera
+        “tamanho cheio” para aquele corpo. Como a força depende da
+        massa, cada corpo tem a sua — uma estrela e um meteoro não
+        podem compartilhar referência.
+        """
         if not self.enabled:
             return
 
-        if vector.length_squared() <= 1e-12:
+        length_sq = vector.length_squared()
+        if length_sq <= 1e-12 or reference_scale <= 0.0:
             return
+
+        world_length = length_sq ** 0.5
+        pixel_length = (world_length / reference_scale) * max_screen_length
+        if pixel_length > max_screen_length:
+            pixel_length = max_screen_length
 
         start = camera.world_to_screen(origin)
 
-        end_world = origin + vector * scale
-
-        end = camera.world_to_screen(end_world)
+        # Direção em world_space = direção em screen_space (a câmera
+        # só translada e escala). Multiplicamos o vetor pelo fator
+        # `pixel_length / world_length` para obter o deslocamento na
+        # tela, sem precisar normalizar.
+        scale = pixel_length / world_length
 
         renderer.draw_arrow(
             self.color,
             start,
-            end,
+            (start.x + vector.x * scale, start.y + vector.y * scale),
             width=self.width,
             head_length=self.head_length,
         )

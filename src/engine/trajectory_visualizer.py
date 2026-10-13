@@ -49,6 +49,47 @@ class TrajectoryVisualizer:
         """Alterna a visualização da trajetória futura."""
         self.enabled = not self.enabled
 
+    @staticmethod
+    def _merge_pair(
+        px: list[float],
+        py: list[float],
+        vx: list[float],
+        vy: list[float],
+        masses: list[float],
+        radii: list[float],
+        i: int,
+        j: int,
+    ) -> None:
+        """Funde o par (i, j) in-place, se ambos ainda estiverem vivos.
+
+        Sobrevive o mais massivo, replicando a política do
+        `_resolve_merges` real. Pares cujo lado já foi absorvido por
+        outro merge no mesmo passo viram no-op — cadeias se resolvem
+        ao longo dos passos da predição.
+        """
+        mass_i = masses[i]
+        mass_j = masses[j]
+        if mass_i <= 0.0 or mass_j <= 0.0:
+            return
+
+        if mass_j > mass_i:
+            i, j = j, i
+            mass_i, mass_j = mass_j, mass_i
+
+        total = mass_i + mass_j
+
+        px[i] = (px[i] * mass_i + px[j] * mass_j) / total
+        py[i] = (py[i] * mass_i + py[j] * mass_j) / total
+        vx[i] = (vx[i] * mass_i + vx[j] * mass_j) / total
+        vy[i] = (vy[i] * mass_i + vy[j] * mass_j) / total
+        radii[i] = (radii[i] ** 3 + radii[j] ** 3) ** (1.0 / 3.0)
+        masses[i] = total
+
+        masses[j] = 0.0
+        vx[j] = 0.0
+        vy[j] = 0.0
+        radii[j] = 0.0
+
     def draw(
         self,
         renderer: Renderer,
@@ -60,42 +101,23 @@ class TrajectoryVisualizer:
     ) -> float | None:
         """Prevê e desenha a trajetória futura dos corpos.
 
-        Toda a previsão acontece em estado temporário. Nenhum objeto
-        real da simulação é alterado. Devolve o tempo gasto na operação
-        em segundos, ou `None` quando a visualização está desligada ou
-        os parâmetros impedem a predição.
+        Colisões não interrompem a predição: pares sobrepostos são
+        fundidos in-place (massa, momento e centro de massa
+        conservados), com o absorvido zerado. A detecção acontece
+        dentro do próprio laço de gravidade, então cada passo faz uma
+        única varredura O(N²).
 
-        Culling: corpos fora da câmera continuam sendo integrados — a
-        gravidade deles afeta os demais — mas a trajetória deles não é
-        acumulada nem desenhada, o que economiza uma transformação de
-        tela e um par de floats por ponto por passo.
-
-        `focus_entities` permite desenhar a trajetória de corpos
-        específicos mesmo com `enabled` desligado. É o que faz a
-        trajetória do foguete selecionado aparecer sozinha, sem exigir
-        que a visualização global esteja ativa.
-
-        Parada em colisão: a predição interrompe no primeiro passo em que
-        qualquer par entra no raio de colisão. A simulação real funde os
-        corpos nesse ponto, então prever adiante seria fisicamente inútil
-        e visualmente confuso (as trajetórias se cruzariam).
+        O foguete acoplado segue o hospedeiro em offset fixo, sem
+        participar da detecção de sobreposição com ele.
         """
-
-        focus_entities = tuple(
-            focus_entities or ()
-        )
+        focus_entities = tuple(focus_entities or ())
 
         if not self.enabled and not focus_entities:
             return None
-
         if not bodies:
             return None
         if fixed_delta_time <= 0.0:
             return None
-
-        # Fechamento pendente: não faz sentido gastar ~100ms prevendo uma
-        # trajetória que ninguém vai ver. O evento continua na fila — o
-        # `Application` ainda vai consumi-lo e encerrar normalmente.
         if pygame.event.peek(pygame.QUIT):
             return None
 
@@ -105,7 +127,6 @@ class TrajectoryVisualizer:
         steps = self.steps
         dt = fixed_delta_time
 
-        # Estado temporário em listas planas de floats.
         px = [b.position.x for b in bodies]
         py = [b.position.y for b in bodies]
         vx = [b.velocity.x for b in bodies]
@@ -116,15 +137,39 @@ class TrajectoryVisualizer:
         ax = [0.0] * count
         ay = [0.0] * count
 
-        focus_ids = {
-            id(entity)
-            for entity in focus_entities
-        }
+        # Acoplamento: no máximo um foguete, no máximo um hospedeiro.
+        # Guardamos os índices e o offset uma única vez — o offset é
+        # constante em world_space porque o hospedeiro não gira.
+        docked_body_idx = -1
+        docked_host_idx = -1
+        docked_offset_x = 0.0
+        docked_offset_y = 0.0
 
-        paths: list[
-        list[tuple[float, float]] | None
-        ] = [None] * count
+        for i, body in enumerate(bodies):
+            host = getattr(body, "docked_to", None)
+            if host is None:
+                continue
+            for k, other in enumerate(bodies):
+                if other is host:
+                    docked_body_idx = i
+                    docked_host_idx = k
+                    docked_offset_x = body.position.x - host.position.x
+                    docked_offset_y = body.position.y - host.position.y
+                    break
+            break  # só existe um foguete
 
+        skip_pair = None
+        if docked_body_idx >= 0:
+            lo, hi = (
+                (docked_body_idx, docked_host_idx)
+                if docked_body_idx < docked_host_idx
+                else (docked_host_idx, docked_body_idx)
+            )
+            skip_pair = (lo, hi)
+
+        focus_ids = {id(entity) for entity in focus_entities}
+
+        paths: list[list[tuple[float, float]] | None] = [None] * count
         cam_x = camera.position.x
         cam_y = camera.position.y
         cam_zoom = camera.zoom
@@ -132,76 +177,69 @@ class TrajectoryVisualizer:
         center_y = camera.viewport_center.y
 
         for i, body in enumerate(bodies):
-            should_draw = (
-                    self.enabled
-                    or id(body) in focus_ids
-            )
+            should_draw = self.enabled or id(body) in focus_ids
+            if should_draw and camera.is_visible((px[i], py[i]), radii[i]):
+                sp_x = (px[i] - cam_x) * cam_zoom + center_x
+                sp_y = (py[i] - cam_y) * cam_zoom + center_y
+                paths[i] = [(sp_x, sp_y)]
 
-            if (
-                    should_draw
-                    and camera.is_visible(
-                (px[i], py[i]),
-                radii[i],
-            )
-            ):
-                sp_x = (
-                               px[i] - cam_x
-                       ) * cam_zoom + center_x
-
-                sp_y = (
-                               py[i] - cam_y
-                       ) * cam_zoom + center_y
-
-                paths[i] = [
-                    (sp_x, sp_y)
-                ]
+        # Lista reutilizada pelo laço inteiro — sem realocação por passo.
+        overlaps: list[tuple[int, int]] = []
 
         for step in range(steps):
-            proximity = gravity.compute_accelerations_flat(
-                px,
-                py,
-                masses,
-                ax,
-                ay,
+            if (step & 15) == 0:
+                pygame.event.pump()
+                if pygame.event.peek(pygame.QUIT):
+                    break
+
+            overlaps.clear()
+            gravity.compute_accelerations_flat(
+                px, py, masses, ax, ay,
                 radii=radii,
+                overlaps=overlaps,
+                skip_pair=skip_pair,
             )
 
-            if proximity:
-                break
-
-            prediction_time = (
-                                      step + 1
-                              ) * dt
-
+            prediction_time = (step + 1) * dt
             for i, body in enumerate(bodies):
-                extra = body.prediction_acceleration(
-                    prediction_time
-                )
-
+                if masses[i] <= 0.0:
+                    continue
+                extra = body.prediction_acceleration(prediction_time)
                 if extra is not None:
                     ax[i] += extra.x
                     ay[i] += extra.y
 
+            for i in range(count):
+                if masses[i] <= 0.0:
+                    continue
                 vx[i] += ax[i] * dt
                 vy[i] += ay[i] * dt
-
                 px[i] += vx[i] * dt
                 py[i] += vy[i] * dt
 
+            for i, j in overlaps:
+                self._merge_pair(px, py, vx, vy, masses, radii, i, j)
+
+            if (
+                docked_body_idx >= 0
+                and masses[docked_body_idx] > 0.0
+                and masses[docked_host_idx] > 0.0
+            ):
+                k = docked_host_idx
+                i = docked_body_idx
+                px[i] = px[k] + docked_offset_x
+                py[i] = py[k] + docked_offset_y
+                vx[i] = vx[k]
+                vy[i] = vy[k]
+
+            for i in range(count):
+                if masses[i] <= 0.0:
+                    continue
                 path = paths[i]
-
                 if path is not None:
-                    sp_x = (
-                                   px[i] - cam_x
-                           ) * cam_zoom + center_x
-
-                    sp_y = (
-                                   py[i] - cam_y
-                           ) * cam_zoom + center_y
-
-                    path.append(
-                        (sp_x, sp_y)
-                    )
+                    sp_x = (px[i] - cam_x) * cam_zoom + center_x
+                    sp_y = (py[i] - cam_y) * cam_zoom + center_y
+                    path.append((sp_x, sp_y))
 
         for path in paths:
             if path is not None and len(path) >= 2:
