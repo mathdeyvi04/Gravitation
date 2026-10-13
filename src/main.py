@@ -14,6 +14,7 @@ from src.physics.gravity import NewtonianGravity
 from src.physics.rk4 import RK4Integrator
 from src.entities.entity_picker import EntityPicker
 from src.physics.relative_orbit import RelativeOrbit2D
+from src.physics.collision import collides
 from src.engine.inspector import (
     AnyGrav,
     Inspector,
@@ -351,7 +352,7 @@ class Gravitation(Application):
                 if not b.active or b is a:
                     j += 1
                     continue
-                if not a.overlaps(b):
+                if not collides(a, b):
                     j += 1
                     continue
                 if a.mass >= b.mass:

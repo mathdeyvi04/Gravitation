@@ -137,9 +137,21 @@ class MassObject(Entity):
 
         O `MassObject` expõe `position`, `velocity`, `previous_position`
         e `mass`, e o integrador escreve nesses campos. A escolha do
-        método numérico (Euler, RK4, Verlet) pertence ao integrador,
+        métodx numérico (Euler, RK4, Verlet) pertence ao integrador,
         não ao corpo.
         """
+
+    def collision_circles(
+        self,
+        alpha: float = 1.0,
+    ) -> tuple[tuple[pygame.Vector2, float], ...]:
+        """Um único círculo centrado em `position` com raio `radius`."""
+        position = (
+            self.previous_position.lerp(self.position, alpha)
+            if alpha < 1.0
+            else self.position
+        )
+        return ((position, self.radius),)
 
     def render(
         self,
@@ -168,16 +180,6 @@ class MassObject(Entity):
             camera.world_to_screen(pos),
             camera.world_to_screen_size(self.radius),
         )
-
-    def overlaps(self, other: "MassObject") -> bool:
-        """Indica se os discos de `self` e `other` se sobrepõem.
-
-        Compara os quadrados das distâncias com o quadrado da soma dos
-        raios — evita a raiz quadrada. Colisão entre discos é
-        equivalente a colisão entre os círculos que representam.
-        """
-        r = self.radius + other.radius
-        return self.position.distance_squared_to(other.position) <= r * r
 
     def merge_with(self, other: "MassObject") -> None:
         """Absorve `other`, conservando massa, momento linear e volume.
@@ -274,35 +276,27 @@ class MassObject(Entity):
         return max(0.0, position.distance_to(world_position) - self.radius)
 
     def render_selection(
-        self,
-        renderer: Renderer,
-        camera: Camera2D,
-        alpha: float = 1.0,
-        color: tuple[int, int, int] = (255, 255, 255),
+            self,
+            renderer: Renderer,
+            camera: Camera2D,
+            alpha: float = 1.0,
+            color: tuple[int, int, int] = (255, 255, 255),
     ) -> None:
-        """Desenha um anel em volta do corpo para indicar seleção.
+        """Desenha um anel por sub-círculo da forma de colisão.
 
-        O anel fica a `SELECTION_MARGIN` pixels da borda do disco, uma
-        folga constante em screen_space — assim o destaque permanece
-        perceptível mesmo em zooms extremos, onde o disco é minúsculo.
-
-        `color` permite usar cores diferentes para seleções distintas:
-        o `main.py` usa branco para a seleção principal e laranja para
-        o corpo de referência orbital.
+        Para um `MassObject` comum é um único anel — mesma aparência
+        de antes. Para entidades com forma composta (ex.: `Rocket`),
+        produz um contorno composto que coincide exatamente com a zona
+        onde a fusão dispara.
         """
-        position = (
-            self.previous_position.lerp(self.position, alpha)
-            if alpha < 1.0
-            else self.position
-        )
+        for center_world, radius_world in self.collision_circles(alpha):
+            center = camera.world_to_screen(center_world)
+            body_radius = camera.world_to_screen_size(radius_world)
+            ring_radius = body_radius + self.SELECTION_MARGIN
 
-        center = camera.world_to_screen(position)
-        body_radius = camera.world_to_screen_size(self.radius)
-        ring_radius = body_radius + self.SELECTION_MARGIN
-
-        renderer.draw_circle(
-            color,
-            center,
-            ring_radius,
-            width=2,
-        )
+            renderer.draw_circle(
+                color,
+                center,
+                ring_radius,
+                width=2,
+            )

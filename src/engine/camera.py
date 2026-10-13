@@ -97,23 +97,6 @@ class Camera2D:
             return screen_size / self.zoom
         return pygame.Vector2(screen_size) / self.zoom
 
-    def world_to_screen_rect(
-        self,
-        world_rect: pygame.Rect,
-    ) -> pygame.Rect:
-        """
-        Converte um pygame.Rect de world_space para screen_space.
-        """
-        screen_position = self.world_to_screen(world_rect.topleft)
-        screen_size = self.world_to_screen_size(world_rect.size)
-
-        return pygame.Rect(
-            round(screen_position.x),
-            round(screen_position.y),
-            round(screen_size.x),
-            round(screen_size.y),
-        )
-
     def move(self, offset: pygame.Vector2 | tuple[float, float]) -> None:
         """
         Move a câmera no world_space.

@@ -1,5 +1,6 @@
 import os
 from collections import OrderedDict
+from collections.abc import Sequence
 from typing import Optional, Union
 
 import pygame
@@ -258,7 +259,7 @@ class Renderer:
     def draw_polygon(
         self,
         color: tuple[int, int, int],
-        points,
+        points: Sequence[Union[tuple[float, float], pygame.Vector2]],
         width: int = 0,
     ) -> None:
         """Desenha um polígono."""

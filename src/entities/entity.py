@@ -127,6 +127,19 @@ class Entity(ABC):
         """
         return float("inf")
 
+    def collision_circles(
+            self,
+            alpha: float = 1.0,
+    ) -> tuple[tuple[pygame.Vector2, float], ...]:
+        """Círculos em world_space que compõem a forma de colisão.
+
+        Retorna uma tupla de pares `(centro, raio)`. `alpha` é o fator
+        de interpolação entre o estado físico anterior e o atual,
+        coerente com o que `render` desenha. Entidades sem forma
+        colidível devolvem tupla vazia.
+        """
+        return ()
+
     def render_selection(
             self,
             renderer: Renderer,

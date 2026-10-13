@@ -336,6 +336,56 @@ class Rocket(MassObject):
             max(ys),
         )
 
+
+    def collision_circles(
+        self,
+        alpha: float = 1.0,
+    ) -> tuple[tuple[pygame.Vector2, float], ...]:
+        """Quatro círculos alinhados ao eixo do foguete.
+
+        Cada círculo tem raio igual à meia-largura do corpo
+        (`body_width / 2`), então eles tangenciam as laterais do
+        retângulo. Quatro centros cobrem a extensão total sem deixar
+        vão:
+
+        - traseiro: encosta na traseira do corpo;
+        - central: preenche o meio do retângulo (sem ele haveria uma
+          lacuna onde dois círculos consecutivos não se sobrepõem);
+        - frontal: encosta na base do bico;
+        - bico: recuado um raio a partir da ponta, cobre o triângulo
+          com uma sobre-aproximação lateral pequena e aceitável.
+        """
+        position = (
+            self.previous_position.lerp(self.position, alpha)
+            if alpha < 1.0
+            else self.position
+        )
+        angle = self._interpolated_angle(alpha)
+
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+
+        half_length = self.body_length * 0.5
+        radius = self.body_width * 0.5
+
+        local_xs = (
+            -half_length + radius,
+            0.0,
+            half_length - radius,
+            half_length + self.nose_length - radius,
+        )
+
+        return tuple(
+            (
+                pygame.Vector2(
+                    position.x + lx * cos_a,
+                    position.y + lx * sin_a,
+                ),
+                radius,
+            )
+            for lx in local_xs
+        )
+
     def _to_local(
         self,
         world_position: pygame.Vector2,

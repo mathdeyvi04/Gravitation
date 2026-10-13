@@ -70,6 +70,11 @@ class TrajectoryVisualizer:
         acumulada nem desenhada, o que economiza uma transformação de
         tela e um par de floats por ponto por passo.
 
+        `focus_entities` permite desenhar a trajetória de corpos
+        específicos mesmo com `enabled` desligado. É o que faz a
+        trajetória do foguete selecionado aparecer sozinha, sem exigir
+        que a visualização global esteja ativa.
+
         Parada em colisão: a predição interrompe no primeiro passo em que
         qualquer par entra no raio de colisão. A simulação real funde os
         corpos nesse ponto, então prever adiante seria fisicamente inútil

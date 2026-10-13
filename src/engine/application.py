@@ -20,15 +20,15 @@ class Application(ABC):
     """
 
     def __init__(self, config: Configs) -> None:
-        """Inicializa o Pygame e todos os subsistemas da aplicação."""
+        """Inicializa display, font e os subsistemas da aplicação.
+
+        Não chamamos `pygame.init()` porque ele sobe também o mixer de
+        áudio, que não usamos — e cujo shutdown trava em várias
+        combinações de driver. Ver `shutdown()` para a contrapartida.
+        """
         self.config = config
         self.running = False
 
-        # Inicializamos somente os subsistemas que a aplicação realmente
-        # usa. `pygame.init()` também sobe o mixer de áudio, que jamais é
-        # utilizado — e `pygame.mixer.quit()` é conhecido por travar o
-        # encerramento em várias combinações de driver/SO. Evitar o mixer
-        # deixa o shutdown previsível.
         pygame.display.init()
         pygame.font.init()
         self.screen = pygame.display.set_mode((config.width, config.height))
@@ -55,9 +55,8 @@ class Application(ABC):
         """Executa o loop principal até `stop()` ou quit ser solicitado.
 
         Cada iteração: mede o tempo, lê entradas, chama `update` com delta
-        variável, drena os passos fixos acumulados, limpa, chama `render` e
-        apresenta. `shutdown()` é sempre chamado ao final, inclusive em
-        exceção.
+        variável, drena os passos fixos acumulados, desenha o fundo (que
+        pode limpar a tela), chama `render` e apresenta.
         """
         self.running = True
         try:
