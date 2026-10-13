@@ -1,11 +1,13 @@
 import math
 import random
 import pygame
+import argparse
 from pathlib import Path
 from typing import Optional, Union
 from time import perf_counter
 from src.config import Configs, SimulationConfig
 from src.engine.application import Application
+from src.engine.memory_monitor import MemoryMonitor
 from src.engine.vector_visualizer import VectorVisualizer
 from src.engine.trajectory_visualizer import TrajectoryVisualizer
 from src.engine.orbit_visualizer import OrbitVisualizer
@@ -96,6 +98,7 @@ class Gravitation(Application):
         self,
         config: Configs,
         sim_config: SimulationConfig,
+        memory_monitor: MemoryMonitor | None = None,
     ) -> None:
         super().__init__(config)
         self.sim_config = sim_config
@@ -145,6 +148,14 @@ class Gravitation(Application):
         # Quando True, a câmera centraliza a cada frame no corpo
         # selecionado. Ativado/desativado com a tecla V.
         self.following = False
+
+        self.memory_monitor = memory_monitor
+        if self.memory_monitor is not None:
+            # Baseline imediato: sempre existe um snapshot #0 para diffs.
+            self.memory_monitor.capture(
+                label="startup",
+                context={"phase": "init"},
+            )
 
     def _register_mass_object_properties(self) -> None:
         """Registra as propriedades de `MassObject` exibíveis no inspector.
@@ -714,6 +725,28 @@ class Gravitation(Application):
     def update(self, delta_time: float) -> None:
         """Lógica de delta variável: quando algo variar no sistema."""
 
+        if (
+                self.memory_monitor is not None
+                and self.memory_monitor.should_capture()
+        ):
+            self.memory_monitor.capture(
+                label=f"t{self.clock.total_time:.0f}s",
+                context={
+                    "entities": len(self.world.entities),
+                    "active_entities": sum(
+                        1 for e in self.world.entities if e.active
+                    ),
+                    "fps": round(self.clock.fps, 1),
+                    "total_time": round(self.clock.total_time, 2),
+                    "zoom": round(self.camera.zoom, 4),
+                    "trajectory": self.future_trajectory.enabled,
+                    "forces": self.force_vectors.enabled,
+                    "orbits": self.orbit_visualizer.enabled,
+                    "following": self.following,
+                    "dumps_so_far": self.memory_monitor.count,
+                },
+            )
+
         # Zoom por scroll, ancorado no cursor. A base 1.1 dá um passo
         # suave por notch; `**` acumula linearmente quando há vários.
         if self.input.mouse_wheel != 0:
@@ -1039,8 +1072,84 @@ class Gravitation(Application):
             color=(255, 255, 255),
         )
 
+    def shutdown(self) -> None:
+        """Encerra subsistemas; grava um snapshot final se o monitor existe."""
+        if self.memory_monitor is not None:
+            if self.memory_monitor.active:
+                self.memory_monitor.capture(
+                    label="shutdown",
+                    context={
+                        "phase": "shutdown",
+                        "total_time": round(self.clock.total_time, 2),
+                        "frame_count": self.clock.frame_count,
+                    },
+                )
+            self.memory_monitor.stop()
+        super().shutdown()
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="gravitation",
+        description=(
+            "Simulação gravitacional de N corpos. "
+            "Sem flags, inicia a cena sem nenhum custo de instrumentação."
+        ),
+    )
+
+    parser.add_argument(
+        "--monitor-memory",
+        action="store_true",
+        help=(
+            "Liga o monitor de memória: tracemalloc é ativado e snapshots "
+            "são gravados automaticamente em intervalos regulares. "
+            "Sem esta flag, nenhum custo é pago."
+        ),
+    )
+
+    parser.add_argument(
+        "--dump-dir",
+        type=Path,
+        default=Path(__file__).parent.parent / "mem_dumps",
+        metavar="DIR",
+        help="Diretório dos snapshots. Padrão: ./mem_dumps/",
+    )
+
+    parser.add_argument(
+        "--dump-interval",
+        type=float,
+        default=1,
+        metavar="SEGUNDOS",
+        help=(
+            "Intervalo, em segundos, entre capturas automáticas. "
+            "Padrão: 10.0."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-dumps",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Número máximo de snapshots por execução. Sem limite se "
+            "omitido. Útil para sessões longas."
+        ),
+    )
+
+    parser.add_argument(
+        "--traceback-depth",
+        type=int,
+        default=25,
+        metavar="N",
+        help=(
+            "Frames de traceback guardados por alocação. Maior = mais "
+            "preciso para localizar vazamentos, arquivos maiores. "
+            "Padrão: 25."
+        ),
+    )
+
+    args = parser.parse_args()
+
     config = Configs(
         width=1500,
         height=1000,
@@ -1049,8 +1158,23 @@ def main() -> None:
         max_fps=60,
     )
     sim_config = SimulationConfig()
-    Gravitation(config, sim_config).run()
 
+    monitor = None
+    if args.monitor_memory:
+        monitor = MemoryMonitor(
+            dump_dir=args.dump_dir,
+            traceback_depth=args.traceback_depth,
+            interval=args.dump_interval,
+            max_dumps=args.max_dumps,
+            start_immediately=True,
+        )
+        print(
+            f"[mem] monitor ativo — snapshots a cada "
+            f"{args.dump_interval:.1f}s em {monitor.session_dir}"
+            + (f" (máx. {args.max_dumps})" if args.max_dumps else "")
+        )
+
+    Gravitation(config, sim_config, memory_monitor=monitor).run()
 
 if __name__ == "__main__":
     main()
