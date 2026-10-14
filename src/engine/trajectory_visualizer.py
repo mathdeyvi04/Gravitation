@@ -1,6 +1,7 @@
 import pygame
 from src.physics.gravity import NewtonianGravity
 from time import perf_counter
+from typing import Optional
 from src.engine.camera import Camera2D
 from src.entities.massobject import MassObject
 from src.engine.renderer import Renderer
@@ -94,8 +95,6 @@ class TrajectoryVisualizer:
         vx[j] = 0.0
         vy[j] = 0.0
         radii[j] = 0.0
-
-    from src.entities.massobject import MassObject  # no topo do arquivo
 
     def draw(
         self,
@@ -226,7 +225,7 @@ class TrajectoryVisualizer:
             # ver para onde o corpo selecionado vai, mesmo quando ele
             # acabou de sair do quadro.
             if should_draw and (focused or camera.is_visible((px[i], py[i]), radii[i])):
-                path = [None] * capacity
+                path: list[Optional[tuple[float, float]]] = [None] * capacity
                 path[0] = (
                     (px[i] - cam_x) * cam_zoom + center_x,
                     (py[i] - cam_y) * cam_zoom + center_y,
