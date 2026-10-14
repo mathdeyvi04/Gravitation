@@ -10,7 +10,6 @@ from src.engine.application import Application
 from src.engine.memory_monitor import MemoryMonitor
 from src.engine.vector_visualizer import VectorVisualizer
 from src.engine.trajectory_visualizer import TrajectoryVisualizer
-from src.engine.orbit_visualizer import OrbitVisualizer
 from src.engine.world import World
 from src.entities.massobject import MassObject
 from src.physics.gravity import NewtonianGravity
@@ -120,11 +119,6 @@ class Gravitation(Application):
         self.future_trajectory = TrajectoryVisualizer(
             steps=sim_config.future_trajectory_steps,
             color=(170, 170, 255),
-        )
-        self.orbit_visualizer = OrbitVisualizer(
-            color=(230, 30, 30),
-            width=2,
-            orbit_count=6,
         )
         self.entity_picker = EntityPicker()
         self.inspector = Inspector()
@@ -741,7 +735,6 @@ class Gravitation(Application):
                     "zoom": round(self.camera.zoom, 4),
                     "trajectory": self.future_trajectory.enabled,
                     "forces": self.force_vectors.enabled,
-                    "orbits": self.orbit_visualizer.enabled,
                     "following": self.following,
                     "dumps_so_far": self.memory_monitor.count,
                 },
@@ -769,9 +762,6 @@ class Gravitation(Application):
 
         if self.input.was_pressed(pygame.K_t):
             self.future_trajectory.toggle()
-
-        if self.input.was_pressed(pygame.K_o):
-            self.orbit_visualizer.toggle()
 
         if self.input.was_pressed(pygame.K_v):
             self.following = (
@@ -970,7 +960,7 @@ class Gravitation(Application):
             force_time = perf_counter() - force_time
 
         trajectory_time = 0.0
-        if self.future_trajectory.enabled or isinstance(selected, Rocket):
+        if self.future_trajectory.enabled:
             trajectory_time = (
                 self.future_trajectory.draw(
                     renderer,
@@ -981,19 +971,6 @@ class Gravitation(Application):
                     focus_entities=trajectory_focus,
                 )
             )
-
-        orbit_time = 0.0
-        if self.orbit_visualizer.enabled:
-            orbit_time = perf_counter()
-
-            self.orbit_visualizer.draw(
-                renderer,
-                self.camera,
-                self.world.entities,
-                max_radius=self.sim_config.world_width * 0.45,
-            )
-
-            orbit_time = perf_counter() - orbit_time
 
         self.world.render(
             renderer,
@@ -1008,19 +985,6 @@ class Gravitation(Application):
             renderer,
             self.inspector,
             self.relation_inspector,
-        )
-
-        orbit_action = (
-            "ocultar"
-            if self.orbit_visualizer.enabled
-            else "ver"
-        )
-
-        renderer.draw_text(
-            f"Pressione O para {orbit_action} as órbitas circulares{': {:.2f}ms'.format(orbit_time * 1000) if self.orbit_visualizer.enabled else ''}",
-            (5, self.config.height - 115),
-            size=25,
-            color=(255, 255, 255),
         )
 
         force_action = (
