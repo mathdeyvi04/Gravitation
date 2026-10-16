@@ -188,45 +188,44 @@ class Gravitation(Application):
 
     def _register_mass_object_relation_properties(self) -> None:
         """Registra as propriedades entre dois MassObject."""
-
         self.relation_inspector.register(
             MassObject,
             MassObject,
 
             lambda primary, reference: (
                 RelativeOrbit2D.from_bodies(
-                    primary,
                     reference,
+                    primary,
                     self.sim_config.gravitational_constant,
                 )
             ),
 
             InspectionProperty(
-                "Distância relativa",
+                "Distância",
                 lambda orbit: orbit.distance,
                 lambda value: f"{value:.2f}",
             ),
 
             InspectionProperty(
-                "Vetor distância",
-                lambda orbit: orbit.relative_position,
-                lambda vector: (
-                    f"({vector.x:.2f}, {vector.y:.2f})"
-                ),
-            ),
-
-            InspectionProperty(
                 "Velocidade relativa",
-                lambda orbit: orbit.relative_speed,
-                lambda value: f"{value:.2f}",
+                lambda orbit: (
+                    -orbit.relative_speed
+                    if orbit.radial_velocity < 0.0
+                    else orbit.relative_speed
+                ),
+                lambda value: f"{value:+.2f}",
             ),
 
             InspectionProperty(
-                "Vetor velocidade",
-                lambda orbit: orbit.relative_velocity,
-                lambda vector: (
-                    f"({vector.x:.2f}, {vector.y:.2f})"
-                ),
+                "Velocidade radial",
+                lambda orbit: orbit.radial_velocity,
+                lambda value: f"{value:+.2f}",
+            ),
+
+            InspectionProperty(
+                "Velocidade tangencial",
+                lambda orbit: orbit.tangential_velocity,
+                lambda value: f"{value:+.2f}",
             ),
 
             InspectionProperty(
@@ -323,7 +322,27 @@ class Gravitation(Application):
                 ),
                 lambda value: "INF" if value is None else f"{value * self.config.fixed_timestep:.2f}s",
             ),
+
+            InspectionProperty(
+                "Acoplagem",
+                lambda _orbit: (
+                    self.inspector.selected.attach_coeficient(
+                        self.relation_inspector.reference,
+                        gravitational_constant=self.sim_config.gravitational_constant,
+                        landing_max_speed=self.sim_config.landing_max_speed,
+                        fixed_timestep=self.config.fixed_timestep,
+                    )
+                    if isinstance(self.inspector.selected, Rocket)
+                    else None
+                ),
+                lambda value: (
+                    "—"
+                    if value is None
+                    else f"{value * self.config.fixed_timestep:.2f}s"
+                ),
+            ),
         )
+
 
     def _register_rocket_properties(self) -> None:
         """Registra propriedades específicas do foguete."""

@@ -41,6 +41,14 @@ class RelativeOrbit2D:
     # `None` quando a órbita já é aberta ou indefinida.
     escape_delta_v: pygame.Vector2 | None
 
+    # Componentes do vetor velocidade relativa na base local
+    # (radial, tangencial). Ambos assinados:
+    #   radial_velocity > 0  → referência se afastando do selecionado
+    #   radial_velocity < 0  → referência se aproximando do selecionado
+    #   tangential_velocity > 0 → rotação no sentido de t_hat
+    radial_velocity: float
+    tangential_velocity: float
+
     @classmethod
     def from_bodies(
         cls,
@@ -83,6 +91,8 @@ class RelativeOrbit2D:
                 orbital_period=None,
                 orbit_type="Indefinido",
                 escape_delta_v=None,
+                radial_velocity=0.0,
+                tangential_velocity=0.0,
             )
 
         r_dot_v = (
@@ -99,6 +109,9 @@ class RelativeOrbit2D:
             relative_position.x * relative_velocity.y
             - relative_position.y * relative_velocity.x
         )
+
+        radial_velocity = r_dot_v / distance
+        tangential_velocity = angular_momentum / distance
 
         # Vetor excentricidade em coordenadas cartesianas.
         eccentricity_x = (
@@ -145,7 +158,7 @@ class RelativeOrbit2D:
             semi_major_axis = None
 
         # Apenas órbitas fechadas possuem apoapsis.
-        if eccentricity < 1.0:
+        if eccentricity < 1 - 1e-6:
             apoapsis_distance = (
                 semi_latus_rectum
                 / (1.0 - eccentricity)
@@ -194,5 +207,7 @@ class RelativeOrbit2D:
             semi_major_axis=semi_major_axis,
             orbit_type=orbit_type,
             escape_delta_v=escape_delta_v,
-            orbital_period=orbital_period
+            orbital_period=orbital_period,
+            radial_velocity=radial_velocity,
+            tangential_velocity=tangential_velocity
         )

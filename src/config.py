@@ -89,6 +89,6 @@ class SimulationConfig:
     # velocidades em que o contato é silenciosamente ignorado (abaixo
     # não funde, acima não pousa). Se um dia a política de impacto for
     # refinada, este é o valor a ajustar.
-    landing_max_speed: float = 150
+    landing_max_speed: float = 120
 
     future_trajectory_steps: int = 2000

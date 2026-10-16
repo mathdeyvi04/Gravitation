@@ -377,7 +377,7 @@ class InspectorHUD:
                 and relation_properties
         ):
             reference_title = (
-                f"REFERÊNCIA: {type(reference).__name__}"
+                type(reference).__name__
             )
 
             reference_lines.append(reference_title)

@@ -677,3 +677,117 @@ class Rocket(MassObject):
                 return step
 
         return None
+
+    def attach_coeficient(
+        self,
+        host: "MassObject",
+        gravitational_constant: float,
+        landing_max_speed: float,
+        fixed_timestep: float,
+        max_nose_angle: float = math.radians(45.0),
+        max_range_factor: float = 5.0,
+        max_coast_steps: int = 5_000,
+        max_burn_steps: int = 5_000,
+    ) -> int | None:
+        """Passos de empuxo de frenagem para pousar em segurança sobre ``host``.
+
+        Modelo em duas fases:
+
+        1. O foguete **coasta** (motor desligado) a partir do estado atual
+           até o ponto onde a frenagem deve começar.
+        2. Aplica retro-empuxo contínuo — bico apontado aproximadamente
+           radial para fora — até cruzar a altitude de acoplamento.
+
+        O número devolvido é o **tempo de queima** da fase 2, em passos. É
+        o menor T que garante chegada com velocidade total dentro de
+        ``landing_max_speed``: o ponto de corte é aquele em que a queima
+        começa o mais tarde possível sem que a velocidade de chegada
+        exceda o envelope. Queimar por mais tempo só aumentaria a
+        velocidade de chegada.
+
+        Pré-condições (devolvem ``None``):
+
+        - bico a no máximo ``max_nose_angle`` da direção radial para fora;
+        - ``r`` entre ``r_dock`` e ``max_range_factor × r_dock``;
+        - velocidade radial negativa (aproximação);
+        - componente tangencial dentro de ``landing_max_speed``;
+        - parâmetros físicos válidos.
+
+        Devolve ``None`` também quando a manobra é fisicamente impossível:
+        mesmo começando a queimar o mais tarde possível, a velocidade de
+        chegada excede ``landing_max_speed``.
+        """
+        if self.thrust_acceleration <= 0.0 or host.mass <= 0.0:
+            return None
+        if fixed_timestep <= 0.0 or landing_max_speed <= 0.0:
+            return None
+
+        r_dock = host.radius + self.body_length * 0.5 + self.DOCKING_MARGIN
+
+        relative_position = self.position - host.position
+        relative_velocity = self.velocity - host.velocity
+
+        r = relative_position.length()
+        if r <= r_dock or r > r_dock * max_range_factor:
+            return None
+
+        radial_hat = relative_position / r
+        v_r = relative_velocity.dot(radial_hat)
+        v_t = abs(relative_velocity.cross(radial_hat))
+
+        if v_r >= 0.0:
+            return None
+        if v_t > landing_max_speed:
+            return None
+
+        nose = self.forward
+        cos_alpha = nose.dot(radial_hat)
+        if cos_alpha < math.cos(max_nose_angle):
+            return None
+
+        a_thrust = self.thrust_acceleration * cos_alpha
+        if a_thrust <= 0.0:
+            return None
+
+        max_radial_speed_sq = landing_max_speed * landing_max_speed - v_t * v_t
+        if max_radial_speed_sq <= 0.0:
+            return None
+        max_radial_speed = max_radial_speed_sq ** 0.5
+
+        mu = gravitational_constant * host.mass
+
+        # Coast até a janela de queima abrir. Em cada passo, testamos se um
+        # burn contínuo a partir daqui chega à casca com velocidade segura.
+        for _ in range(max_coast_steps):
+            r_b = r
+            v_r_b = v_r
+
+            for burn_step in range(1, max_burn_steps + 1):
+                a_r = a_thrust - mu / (r_b * r_b)
+                v_r_b += a_r * fixed_timestep
+                r_b += v_r_b * fixed_timestep
+
+                if r_b <= r_dock:
+                    if abs(v_r_b) <= max_radial_speed:
+                        return burn_step
+                    # Chegou rápido demais mesmo com burn máximo: coast
+                    # adicional só agrava o quadro.
+                    return None
+
+                if v_r_b >= 0.0:
+                    # Burn reverteu antes da casca — a janela ainda não
+                    # abriu, coasta mais um passo e tenta de novo.
+                    break
+            else:
+                # Nem chegou nem inverteu em ``max_burn_steps``: estado
+                # patológico, desiste.
+                return None
+
+            # Coast um passo (apenas gravidade).
+            v_r += (-mu / (r * r)) * fixed_timestep
+            r += v_r * fixed_timestep
+
+            if r <= r_dock or v_r >= 0.0:
+                return None
+
+        return None
