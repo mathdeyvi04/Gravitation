@@ -628,3 +628,52 @@ class Rocket(MassObject):
             )
             for i in range(len(polygon))
         )
+
+    def detach_coeficient(
+        self,
+        host: MassObject,
+        body_lengths: float,
+        gravitational_constant: float,
+        fixed_timestep: float,
+        max_steps: int = 100_000,
+    ) -> int | None:
+        """Número de passos de empuxo contínuo para subir ``body_lengths``
+        vezes o próprio comprimento a partir de ``host``.
+
+        O foguete parte em repouso relativo à superfície, na altitude de
+        acoplamento (``host.radius + body_length/2 + DOCKING_MARGIN``) e
+        com o bico apontando radialmente para fora. A cada passo, o motor
+        aplica ``thrust_acceleration`` no eixo radial (para fora) e a
+        gravidade de ``host`` puxa na direção oposta. A posição radial é
+        integrada em Euler semi-implícito — mesmo esquema do
+        ``TrajectoryVisualizer`` — até que o afastamento atinja
+        ``body_lengths * body_length``.
+
+        Devolve ``None`` quando o empuxo é insuficiente para vencer a
+        gravidade local em qualquer ponto da subida (``a_thrust <= g``),
+        quando algum parâmetro é degenerado, ou quando ``max_steps`` é
+        atingido sem convergir (teto de segurança contra configurações
+        extremas).
+        """
+        if body_lengths <= 0.0 or fixed_timestep <= 0.0:
+            return None
+        if self.thrust_acceleration <= 0.0 or host.mass <= 0.0:
+            return None
+
+        radius = host.radius + self.body_length * 0.5 + self.DOCKING_MARGIN
+        target = radius + body_lengths * self.body_length
+
+        a_thrust = self.thrust_acceleration
+        velocity = 0.0
+
+        for step in range(1, max_steps + 1):
+            gravity = gravitational_constant * host.mass / (radius * radius)
+            acceleration = a_thrust - gravity
+            if acceleration <= 0.0:
+                return None
+            velocity += acceleration * fixed_timestep
+            radius += velocity * fixed_timestep
+            if radius >= target:
+                return step
+
+        return None

@@ -35,6 +35,8 @@ class InspectionProperty:
     getter: Callable[[Any], Any]
     formatter: Callable[[Any], str]
     widget: Optional[Callable[[Any, Any, pygame.Rect], None]] = None
+    primary: Optional[AnyGrav] = None
+    reference: Optional[AnyGrav] = None
 
 class RelationInspector:
     """
@@ -44,7 +46,7 @@ class RelationInspector:
     """
 
     def __init__(self) -> None:
-        self._reference: Entity | None = None
+        self._reference: AnyGrav | None = None
 
         self._registry: dict[
             tuple[type, type],
@@ -56,8 +58,8 @@ class RelationInspector:
 
     def register(
         self,
-        primary_type: type[Entity],
-        reference_type: type[Entity],
+        primary_type: type[AnyGrav],
+        reference_type: type[AnyGrav],
         context_factory: Callable[[Any, Any], Any],
         *properties: InspectionProperty,
     ) -> None:
@@ -72,7 +74,7 @@ class RelationInspector:
 
     def select_reference(
         self,
-        entity: Entity | None,
+        entity: AnyGrav | None,
     ) -> None:
         self._reference = entity
 
@@ -80,7 +82,7 @@ class RelationInspector:
         self._reference = None
 
     @property
-    def reference(self) -> Entity | None:
+    def reference(self) -> AnyGrav | None:
         if (
             self._reference is None
             or not self._reference.active
@@ -91,7 +93,7 @@ class RelationInspector:
 
     def _get_registration(
         self,
-        primary: Entity,
+        primary: AnyGrav,
     ):
         reference = self.reference
 
@@ -115,7 +117,7 @@ class RelationInspector:
 
     def get_context(
         self,
-        primary: Entity,
+        primary: AnyGrav,
     ) -> Any | None:
 
         reference = self.reference
@@ -137,7 +139,7 @@ class RelationInspector:
 
     def get_properties(
         self,
-        primary: Entity,
+        primary: AnyGrav,
     ) -> tuple[InspectionProperty, ...]:
 
         registration = self._get_registration(primary)
@@ -161,7 +163,7 @@ class Inspector:
 
     def __init__(self) -> None:
         """Inicializa sem entidade selecionada e sem registros."""
-        self._selected: Entity | None = None
+        self._selected: AnyGrav | None = None
         self._registry: dict[
             type,
             tuple[InspectionProperty, ...],
@@ -169,7 +171,7 @@ class Inspector:
 
     def register(
         self,
-        entity_type: type[Entity],
+        entity_type: type[AnyGrav],
         *properties: InspectionProperty,
     ) -> None:
         """Associa `properties` ao tipo `entity_type`.
@@ -178,7 +180,7 @@ class Inspector:
         """
         self._registry[entity_type] = tuple(properties)
 
-    def select(self, entity: Entity | None) -> None:
+    def select(self, entity: AnyGrav | None) -> None:
         """Define a entidade a ser inspecionada. `None` desseleciona."""
         self._selected = entity
 
@@ -187,7 +189,7 @@ class Inspector:
         self._selected = None
 
     @property
-    def selected(self) -> Entity | None:
+    def selected(self) -> AnyGrav | None:
         """Entidade selecionada, ou `None` se estiver inativa ou ausente.
 
         Uma entidade destruída (`active == False`) é tratada como
@@ -338,7 +340,7 @@ class InspectorHUD:
             self._last_entity_id = entity_id
             self._last_reference_id = reference_id
 
-        title = f"CORPO: {type(entity).__name__}"
+        title = type(entity).__name__
 
         title_width, title_height = renderer.measure_text(
             title,

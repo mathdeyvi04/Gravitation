@@ -308,6 +308,21 @@ class Gravitation(Application):
                     else f"({vector.x:.2f}, {vector.y:.2f})"
                 ),
             ),
+
+            InspectionProperty(
+                f"Desacoplagem",
+                lambda _orbit: (
+                    self.inspector.selected.detach_coeficient(
+                        self.relation_inspector.reference,
+                        body_lengths=3,
+                        gravitational_constant=self.sim_config.gravitational_constant,
+                        fixed_timestep=self.config.fixed_timestep,
+                    )
+                    if isinstance(self.inspector.selected, Rocket)
+                    else None
+                ),
+                lambda value: "INF" if value is None else f"{value * self.config.fixed_timestep:.2f}s",
+            ),
         )
 
     def _register_rocket_properties(self) -> None:
