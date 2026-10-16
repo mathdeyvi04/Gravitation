@@ -49,6 +49,13 @@ class RelativeOrbit2D:
     radial_velocity: float
     tangential_velocity: float
 
+    # Componentes do Δv de escape na base local (radial, tangencial).
+    # Ambos assinados: o sinal acompanha o da componente correspondente
+    # da velocidade relativa atual, porque o Δv de escape é um múltiplo
+    # positivo dela. `None` quando a órbita é aberta ou indefinida.
+    escape_delta_v_radial: float | None
+    escape_delta_v_tangential: float | None
+
     @classmethod
     def from_bodies(
         cls,
@@ -93,6 +100,8 @@ class RelativeOrbit2D:
                 escape_delta_v=None,
                 radial_velocity=0.0,
                 tangential_velocity=0.0,
+                escape_delta_v_radial=None,
+                escape_delta_v_tangential=None,
             )
 
         r_dot_v = (
@@ -175,14 +184,16 @@ class RelativeOrbit2D:
         else:
             orbit_type = "Hiperbólica"
 
-        # Escape Δv: só definido em órbitas fechadas (ligadas).
-        # Direção ótima = direção da velocidade relativa atual.
         if eccentricity < 1.0 - 1e-6 and relative_speed > 1e-6:
             escape_speed = math.sqrt(2.0 * mu / distance)
             scale = (escape_speed - relative_speed) / relative_speed
             escape_delta_v = relative_velocity * scale
+            escape_delta_v_radial = scale * radial_velocity
+            escape_delta_v_tangential = scale * tangential_velocity
         else:
             escape_delta_v = None
+            escape_delta_v_radial = None
+            escape_delta_v_tangential = None
 
         # Período orbital: válido apenas em órbitas ligadas, ou seja,
         # quando o semieixo maior é positivo (elipse ou círculo).
@@ -209,5 +220,7 @@ class RelativeOrbit2D:
             escape_delta_v=escape_delta_v,
             orbital_period=orbital_period,
             radial_velocity=radial_velocity,
-            tangential_velocity=tangential_velocity
+            tangential_velocity=tangential_velocity,
+            escape_delta_v_radial=escape_delta_v_radial,
+            escape_delta_v_tangential=escape_delta_v_tangential
         )

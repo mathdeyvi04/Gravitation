@@ -299,13 +299,15 @@ class Gravitation(Application):
             ),
 
             InspectionProperty(
-                "Δv de escape",
-                lambda orbit: orbit.escape_delta_v,
-                lambda vector: (
-                    "—"
-                    if vector is None
-                    else f"({vector.x:.2f}, {vector.y:.2f})"
-                ),
+                "Δv radial de escape",
+                lambda orbit: orbit.escape_delta_v_radial,
+                lambda value: "—" if value is None else f"{value:+.2f}",
+            ),
+
+            InspectionProperty(
+                "Δv tangencial de escape",
+                lambda orbit: orbit.escape_delta_v_tangential,
+                lambda value: "—" if value is None else f"{value:+.2f}",
             ),
 
             InspectionProperty(
@@ -343,7 +345,6 @@ class Gravitation(Application):
             ),
         )
 
-
     def _register_rocket_properties(self) -> None:
         """Registra propriedades específicas do foguete."""
 
@@ -359,15 +360,6 @@ class Gravitation(Application):
                 lambda rocket: -math.degrees(rocket.angle),
                 lambda value: f"{value:.2f}°",
                 widget=self._draw_rocket_widget,
-            ),
-
-            InspectionProperty(
-                "Direção do bico",
-                lambda rocket: rocket.forward,
-                lambda vector: (
-                    f"({vector.x:.2f}, "
-                    f"{vector.y:.2f})"
-                ),
             ),
 
             InspectionProperty(
