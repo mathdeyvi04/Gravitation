@@ -371,6 +371,17 @@ class Gravitation(Application):
                     else "INATIVA"
                 ),
             ),
+
+            InspectionProperty(
+                "Combustível",
+                lambda rocket: (
+                    rocket.fuel / rocket.fuel_max
+                    if rocket.fuel_max > 0.0
+                    else 0.0
+                ),
+                lambda fraction: f"{100.0 * fraction:.1f}%",
+                widget=self._draw_fuel_widget,
+            ),
         )
 
     def _draw_rocket_widget(
@@ -448,6 +459,45 @@ class Gravitation(Application):
 
         renderer.draw_polygon(rocket.color, body_points)
         renderer.draw_polygon(rocket.nose_color, nose_points)
+
+    def _draw_fuel_widget(self, rocket, renderer, rect) -> None:
+        """Desenha a barra de combustível do foguete.
+
+        Barra com borda fixa e preenchimento proporcional à fração
+        restante. A cor muda conforme o tanque esvazia: verde acima de
+        50%, amarelo entre 25% e 50%, vermelho abaixo de 25%. O cinza
+        de fundo é escuro para se destacar do painel do inspector.
+        """
+        margin = 4
+        bar = pygame.Rect(
+            rect.x + margin,
+            rect.y + margin,
+            rect.width - margin * 2,
+            rect.height - margin * 2,
+        )
+
+        renderer.draw_rect((20, 20, 28), bar)
+
+        fraction = (
+            rocket.fuel / rocket.fuel_max
+            if rocket.fuel_max > 0.0
+            else 0.0
+        )
+        fraction = max(0.0, min(1.0, fraction))
+
+        if fraction > 0.5:
+            fill_color = (80, 200, 80)
+        elif fraction > 0.25:
+            fill_color = (220, 200, 60)
+        else:
+            fill_color = (220, 80, 60)
+
+        fill_width = int(bar.width * fraction)
+        if fill_width > 0:
+            fill = pygame.Rect(bar.x, bar.y, fill_width, bar.height)
+            renderer.draw_rect(fill_color, fill)
+
+        renderer.draw_rect((180, 180, 180), bar, width=1)
 
     # -- Internos -----------------------------------------------------
 

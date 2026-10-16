@@ -32,6 +32,12 @@ class Rocket(MassObject):
         "nose_color",
         "docked_to",
         "docking_angle",
+        "fuel",
+        "fuel_max",
+        "fuel_thrust_rate",
+        "fuel_rotation_rate",
+        # Necessário, pois temos uma física de simulação dos passos. Para rotação não temos, logo não precisamos.
+        "_thrust_authorized",
     )
 
     ROCKET_COLOR = (220, 220, 230)
@@ -48,6 +54,8 @@ class Rocket(MassObject):
         mass: float,
         position: pygame.Vector2,
         velocity: Optional[pygame.Vector2] = None,
+        fuel_max: Optional[float] = None,
+        fuel: Optional[float] = None,
         angle: float = -math.pi * 0.5,
         body_length: float = 24.0,
         body_width: float = 10.0,
@@ -83,6 +91,12 @@ class Rocket(MassObject):
 
         self.thrust_acceleration = float(thrust_acceleration)
         self.thrusting = False
+        self.fuel_max = float(config.fuel_max if fuel_max is None else fuel_max)
+        self.fuel = float(self.fuel_max if fuel is None else fuel)
+        self.fuel_thrust_rate = float(config.fuel_thrust_rate)
+        self.fuel_rotation_rate = float(config.fuel_rotation_rate)
+
+        self._thrust_authorized = False
 
         self.body_length = float(body_length)
         self.body_width = float(body_width)
@@ -182,12 +196,17 @@ class Rocket(MassObject):
         """Aplica comandos do jogador.
 
         Girar enquanto acoplado apenas muda a orientação do foguete —
-        ele permanece pousado. Só o empuxo desacopla. Isso permite ao
-        jogador mirar o bico antes de decolar, sem risco de cair sobre
-        o planeta por causa do tempo gasto girando.
+        ele permanece pousado. Só o empuxo desacopla. Sem combustível,
+        o empuxo não desacopla: o foguete fica preso até o tanque ser
+        reabastecido (fora de escopo hoje).
         """
         thrusting = bool(thrusting)
-        if self.docked_to is not None and thrusting and not self.thrusting:
+        if (
+            self.docked_to is not None
+            and thrusting
+            and not self.thrusting
+            and self.fuel > 0.0
+        ):
             self._sync_to_host()
             self.undock()
 
@@ -215,7 +234,7 @@ class Rocket(MassObject):
         Custo por corpo, no laço quente:
 
         - **1 ``Vector2``** — ``delta``, o deslocamento até o corpo,
-          reaproveitado no ``atan2`` final. Todo o resto é aritmética
+          reaproveitado no ``atan2`` final. Resto é aritmética
           de ``float``.
         - **0 alocações** para corpos que falham no teste de distância
           (o caso comum).
@@ -261,58 +280,101 @@ class Rocket(MassObject):
         return False
 
     def fixed_update(self, fixed_delta_time: float) -> None:
-        """Atualiza a orientação própria do foguete.
+        """Atualiza a orientação própria e debita combustível.
 
         Roda tanto acoplado quanto livre: o jogador precisa poder mirar
         o bico antes de decolar. A posição, quando acoplado, é
         restaurada em `post_integrate` por `_sync_to_host`.
+
+        O combustível é debitado **uma única vez por passo**, aqui —
+        não em `additional_acceleration`, que roda quatro vezes por
+        passo no RK4 e também é consultado pelo visualizador de
+        trajetória. Sem combustível, nem giro nem empuxo produzem
+        efeito, e o flag `_thrust_authorized` desliga o empuxo no
+        integrador.
+
+        Sobre a ordem: o flag é gravado **antes** do débito, refletindo
+        o estado do tanque no início do passo. Assim o último passo de
+        queima autorizado produz efeito completo, mesmo que o débito
+        zere o tanque em seguida — não há "queimar sem empuxo".
         """
         self.previous_angle = self.angle
 
-        self.angle += (
-                self.rotation_input
-                * self.rotation_speed
-                * fixed_delta_time
-        )
+        if self.fuel <= 0.0:
+            self._thrust_authorized = False
+            return
 
-        self.angle = math.atan2(
-            math.sin(self.angle),
-            math.cos(self.angle),
-        )
+        self._thrust_authorized = self.thrusting
+
+        if self.rotation_input != 0:
+            self.angle += (
+                    self.rotation_input
+                    * self.rotation_speed
+                    * fixed_delta_time
+            )
+            self.angle = math.atan2(
+                math.sin(self.angle),
+                math.cos(self.angle),
+            )
+            self.fuel = max(
+                0.0,
+                self.fuel - self.fuel_rotation_rate * fixed_delta_time,
+            )
+
+        if self.thrusting:
+            self.fuel = max(
+                0.0,
+                self.fuel - self.fuel_thrust_rate * fixed_delta_time,
+            )
 
     def additional_acceleration(
         self,
         position: pygame.Vector2,
         velocity: pygame.Vector2,
     ) -> Optional[pygame.Vector2]:
-        """Retorna a aceleração produzida pelo motor."""
+        """Retorna a aceleração produzida pelo motor.
+
+        O flag `_thrust_authorized` é gravado por `fixed_update` e
+        reflete se o tanque tinha combustível no início do passo. Ler
+        o combustível diretamente aqui seria errado: quando o débito
+        do passo zera o tanque, o empuxo já autorizado ainda precisa
+        produzir efeito neste passo.
+        """
         if self.docked_to is not None:
             return None
-        if (
-            not self.thrusting
-            or self.thrust_acceleration <= 0.0
-        ):
+        if not self._thrust_authorized:
+            return None
+        if self.thrust_acceleration <= 0.0:
             return None
         return self.forward * self.thrust_acceleration
 
     def prediction_acceleration(
-        self,
-        elapsed_time: float,
+            self,
+            elapsed_time: float,
     ) -> Optional[pygame.Vector2]:
-        """Aceleração do motor durante uma previsão futura."""
+        """Aceleração do motor durante uma previsão futura.
+
+        A predição não debita combustível — simula a trajetória como se
+        o tanque durasse o horizonte. Mas quando o tanque já está
+        vazio, a predição não deve mostrar empuxo: é uma inconsistência
+        visível demais para ignorar. O caso intermediário (combustível
+        acaba no meio da predição) fica como limitação conhecida.
+        """
         if self.docked_to is not None:
             return None
+        if self.fuel <= 0.0:
+            return None
         if (
-            not self.thrusting
-            or self.thrust_acceleration <= 0.0
+                not self.thrusting
+                or self.thrust_acceleration <= 0.0
         ):
             return None
 
         predicted_angle = (
-            self.angle
-            + self.rotation_input
-            * self.rotation_speed
-            * elapsed_time
+                self.angle
+                + self.rotation_input
+                * self.rotation_speed
+                * elapsed_time
         )
 
         return pygame.Vector2(

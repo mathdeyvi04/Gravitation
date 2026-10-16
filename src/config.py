@@ -91,4 +91,16 @@ class SimulationConfig:
     # refinada, este é o valor a ajustar.
     landing_max_speed: float = 120
 
+    # Capacidade total do tanque do foguete, em unidades arbitrárias.
+    fuel_max: float = 2400.0
+
+    # Taxa de consumo durante empuxo contínuo, em unidades por segundo.
+    # Com dt = 1/120 e 120 u/s, cada passo de queima custa 1 unidade —
+    # exatamente o valor de DESIGN.md §4.
+    fuel_thrust_rate: float = 120.0
+
+    # Taxa de consumo durante rotação contínua, em unidades por segundo.
+    # Menor que a de empuxo: girar é mais barato que queimar.
+    fuel_rotation_rate: float = 30.0
+
     future_trajectory_steps: int = 2000
