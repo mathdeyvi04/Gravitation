@@ -48,7 +48,7 @@ class Gravitation(Application):
 
     # --- Estrelas -----------------------------------------------------
     _STAR_COUNT_RANGE = (1, 1)
-    _STAR_MASS_RANGE = (3_000_000.0, 6_000_000.0)
+    _STAR_MASS_RANGE = (1_000_000.0, 2_000_000.0)
     _STAR_RADIUS_RANGE = (700.0, 1000.0)
     _STAR_ORBIT_RADIUS_RANGE = (1200.0, 2000.0)
 
@@ -78,7 +78,7 @@ class Gravitation(Application):
     _ROCKET_BODY_WIDTH = 7.0
     _ROCKET_NOSE_LENGTH = 9.0
     _ROCKET_MASS = 40.0
-    _ROCKET_THRUST_ACCELERATION = 800.0
+    _ROCKET_THRUST_ACCELERATION = 1000.0
     _WIDGET_AXIS_COLOR = (70, 70, 85)
 
     # Comprimento máximo, em pixels de tela, de uma seta de força.
@@ -452,7 +452,7 @@ class Gravitation(Application):
         self._spawn_meteors(stars, planets)
 
         # Foguete nasce acoplado a um planeta sorteado.
-        host = random.choice(planets) if len(planets) != 0 else None
+        host = random.choice(planets) if len(planets) != 0 else stars[0]
         self._spawn_rocket(host)
 
     def _spawn_stars(
@@ -875,6 +875,12 @@ class Gravitation(Application):
         for body, acceleration in zip(bodies, accelerations):
             body.last_force.update(acceleration)
             body.last_force *= body.mass
+
+        if self.rocket is not None:
+            self.rocket.try_land(
+                bodies,
+                self.sim_config.landing_max_speed,
+            )
 
         self._resolve_merges()
         self.world.purge_inactive()

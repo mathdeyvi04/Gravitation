@@ -252,6 +252,9 @@ class InspectorHUD:
         self.title_size = title_size
         self.property_size = property_size
         self.line_spacing = line_spacing
+        self._cached_width = 0
+        self._last_entity_id: int | None = None
+        self._last_reference_id: int | None = None
 
     @staticmethod
     def _measure_into(
@@ -277,6 +280,22 @@ class InspectorHUD:
         principal saem em branco (mesma cor do anel de seleção); as que
         dependem do corpo de referência saem em laranja (mesma cor do
         anel de referência), incluindo o cabeçalho da seção.
+
+        A largura do painel é estabilizada por um cache monotônico. O
+        conteúdo muda a cada frame — valores numéricos oscilam entre
+        ``100.00`` e ``99.99``, a referência pode trocar — e recalcular
+        a largura a partir do texto atual faria o painel tremer. O cache
+        segue a regra:
+
+        - **Troca de seleção ou referência.** Detectada por ``id`` da
+          entidade e da referência; o cache é descartado para que o
+          painel se ajuste ao novo conteúdo.
+        - **Mesma seleção.** A largura só cresce. Um número que encolhe
+          não reduz o painel; um rótulo novo mais largo o expande uma
+          única vez, e o valor fica fixo daí em diante.
+
+        O resultado é: um ajuste por troca de seleção, zero ruído
+        enquanto o jogador observa o mesmo par de corpos.
         """
         entity = inspector.selected
 
@@ -300,6 +319,24 @@ class InspectorHUD:
 
                 if relation_context is not None:
                     relation_properties = relation_inspector.get_properties(entity)
+
+        # -- Estabilização da largura ----------------------------------
+        # A chave de cache é o par (entidade, referência). Quando
+        # qualquer um dos dois muda, o cache é descartado: o painel
+        # parte do zero e cresce até caber o conteúdo atual. Enquanto
+        # a chave for a mesma, `_cached_width` funciona como piso — a
+        # largura só cresce, nunca encolhe, e os números que oscilam
+        # no texto não propagam para o retângulo.
+        entity_id = id(entity)
+        reference_id = id(reference) if reference is not None else None
+
+        if (
+                entity_id != self._last_entity_id
+                or reference_id != self._last_reference_id
+        ):
+            self._cached_width = 0
+            self._last_entity_id = entity_id
+            self._last_reference_id = reference_id
 
         title = f"CORPO: {type(entity).__name__}"
 
@@ -364,6 +401,16 @@ class InspectorHUD:
                     self.property_size,
                     max_width,
                 )
+
+        # Aplica o piso e atualiza o cache. A ordem importa: primeiro o
+        # piso é imposto à largura deste frame, depois o cache é
+        # atualizado com o resultado — assim `_cached_width` reflete
+        # exatamente o que foi desenhado e nunca decresce dentro de uma
+        # mesma seleção.
+        if max_width < self._cached_width:
+            max_width = self._cached_width
+        else:
+            self._cached_width = max_width
 
         total_lines = len(primary_lines) + len(reference_lines)
         widget_count = len(primary_widgets)

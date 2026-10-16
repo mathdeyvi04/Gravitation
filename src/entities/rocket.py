@@ -1,5 +1,5 @@
 import math
-from typing import Optional
+from typing import Optional, Sequence
 
 import pygame
 
@@ -100,12 +100,28 @@ class Rocket(MassObject):
 
         `angle` é a direção radial (em world_space) do centro do
         hospedeiro até o foguete. O bico nasce apontando nessa mesma
-        direção — o foguete aparece “de pé” sobre a superfície.
+        direção — o foguete aparece "de pé" sobre a superfície.
+
+        A transição é tratada como uma colisão perfeitamente
+        inelástica: o par passa a compartilhar a velocidade do centro
+        de massa, preservando o momento linear do sistema. Sem isso,
+        o foguete simplesmente adotaria a velocidade do hospedeiro e
+        o resíduo `m_r · (v_r − v_h)` seria descartado — invisível
+        para planetas, mas mensurável para luas e meteoros.
         """
         self.docked_to = host
         self.docking_angle = float(angle)
         self.angle = self.docking_angle
         self.previous_angle = self.angle
+
+        total_mass = self.mass + host.mass
+        if total_mass > 0.0:
+            common_velocity = (
+                                      self.velocity * self.mass + host.velocity * host.mass
+                              ) / total_mass
+            self.velocity.update(common_velocity)
+            host.velocity.update(common_velocity)
+
         self._sync_to_host()
 
     def undock(self) -> None:
@@ -170,12 +186,79 @@ class Rocket(MassObject):
         jogador mirar o bico antes de decolar, sem risco de cair sobre
         o planeta por causa do tempo gasto girando.
         """
-        if self.docked_to is not None and thrusting:
+        thrusting = bool(thrusting)
+        if self.docked_to is not None and thrusting and not self.thrusting:
             self._sync_to_host()
             self.undock()
 
         self.rotation_input = max(-1, min(1, int(rotation_input)))
-        self.thrusting = bool(thrusting)
+        self.thrusting = thrusting
+
+    def try_land(
+        self,
+        bodies: Sequence[MassObject],
+        max_relative_speed: float,
+    ) -> bool:
+        """Acopla o foguete a um corpo quando ele cruza a altitude de acoplagem.
+
+        O gatilho é a casca ``r_dock = host.radius + body_length/2 +
+        DOCKING_MARGIN`` — a mesma altitude em que `attach_coefficient`
+        prevê o impacto e em que `_sync_to_host` repousa o foguete.
+        ``collides`` seria enganoso aqui: a forma de colisão do foguete
+        toca o hospedeiro a ``R + body_length/2 − body_width/2``, duas
+        unidades *abaixo* de ``r_dock``. Nessas duas unidades, a
+        gravidade deposita dezenas de u/s, então um foguete que chega a
+        ``r_dock`` dentro do envelope já cruzou o limiar de fusão quando
+        ``collides`` dispara. Checar em ``r_dock`` alinha o gatilho ao
+        coeficiente exibido no inspector.
+
+        Custo por corpo, no laço quente:
+
+        - **1 ``Vector2``** — ``delta``, o deslocamento até o corpo,
+          reaproveitado no ``atan2`` final. Todo o resto é aritmética
+          de ``float``.
+        - **0 alocações** para corpos que falham no teste de distância
+          (o caso comum).
+        - **0 alocações** para o teste de velocidade, que compara
+          ``dvx² + dvy²`` em componentes — sem ``Vector2`` temporário.
+
+        Devolve ``True`` se acoplou. Corpos inativos, o próprio foguete
+        e coincidências de posição são ignorados; se algum candidato
+        está dentro da casca mas acima de `max_relative_speed`, a
+        checagem continua nos demais — o foguete pode passar raspando
+        por um corpo a alta velocidade e ainda pousar em outro.
+        """
+        if self.docked_to is not None:
+            return False
+
+        # Termo constante do raio de acoplagem. `r_dock = body.radius +
+        # self._dock_offset`, e só `body.radius` muda entre corpos.
+        dock_offset = self.body_length * 0.5 + self.DOCKING_MARGIN
+        max_speed_sq = max_relative_speed * max_relative_speed
+
+        for body in bodies:
+            if body is self or not body.active:
+                continue
+
+            delta = self.position - body.position
+            distance_squared = delta.length_squared()
+
+            r_dock = body.radius + dock_offset
+            if distance_squared > r_dock * r_dock:
+                continue
+
+            if distance_squared < 1e-12:
+                continue
+
+            dvx = self.velocity.x - body.velocity.x
+            dvy = self.velocity.y - body.velocity.y
+            if dvx * dvx + dvy * dvy > max_speed_sq:
+                continue
+
+            self.dock_to(body, math.atan2(delta.y, delta.x))
+            return True
+
+        return False
 
     def fixed_update(self, fixed_delta_time: float) -> None:
         """Atualiza a orientação própria do foguete.
