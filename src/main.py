@@ -80,6 +80,8 @@ class Gravitation(Application):
     _ROCKET_MASS = 40.0
     _ROCKET_THRUST_ACCELERATION = 1000.0
     _WIDGET_AXIS_COLOR = (70, 70, 85)
+    MAX_ALPHA = 8.0
+    MIN_ALPHA = 1.5
 
     # Comprimento máximo, em pixels de tela, de uma seta de força.
     # Vale como teto de saturação: forças maiores que a referência do
@@ -406,6 +408,12 @@ class Gravitation(Application):
                 lambda fraction: f"{100.0 * fraction:.1f}%",
                 widget=self._draw_fuel_widget,
             ),
+
+            InspectionProperty(
+                "ALPHA",
+                lambda rocket: rocket.alpha,
+                lambda value: str(value)
+            )
         )
 
     def _draw_rocket_widget(
@@ -920,6 +928,14 @@ class Gravitation(Application):
                 not self.following
                 and self.inspector.selected is not None
             )
+
+        if self.input.was_pressed(pygame.K_UP):
+            if self.rocket is not None:
+                self.rocket.alpha = min(Gravitation.MAX_ALPHA, self.rocket.alpha + 0.25)
+
+        if self.input.was_pressed(pygame.K_DOWN):
+            if self.rocket is not None:
+                self.rocket.alpha = max(Gravitation.MIN_ALPHA, self.rocket.alpha - 0.25)
 
         if (
             self.rocket is not None

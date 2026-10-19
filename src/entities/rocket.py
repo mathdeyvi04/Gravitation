@@ -58,6 +58,7 @@ class Rocket(MassObject):
         velocity: Optional[pygame.Vector2] = None,
         fuel_max: Optional[float] = None,
         fuel: Optional[float] = None,
+        alpha: float = 2.5,
         angle: float = -math.pi * 0.5,
         body_length: float = 24.0,
         body_width: float = 10.0,
@@ -80,6 +81,7 @@ class Rocket(MassObject):
         @param velocity Velocidade inicial; zero se omitida.
         @param fuel_max Capacidade do tanque; usa `config.fuel_max` se None.
         @param fuel Carga inicial; usa `fuel_max` se None.
+        @param alpha Parâmetro relativo à órbita alvo
         @param angle Orientação inicial, em radianos.
         @param body_length Comprimento do corpo (sem o bico).
         @param body_width Largura do corpo.
@@ -130,6 +132,8 @@ class Rocket(MassObject):
 
         self.docked_to: Optional[MassObject] = None
         self.docking_angle: float = 0.0
+
+        self.alpha = alpha
 
     # -- Acoplamento ---------------------------------------------------
 

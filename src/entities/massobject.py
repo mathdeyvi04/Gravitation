@@ -218,11 +218,11 @@ class MassObject(Entity):
 
         # Pesos por massa: centro de massa e velocidade do CM.
         self.position.update(
-            self.position * self.mass + other.position * other.mass
+            (self.position * self.mass + other.position * other.mass)
             / total
         )
         self.velocity.update(
-            self.velocity * self.mass + other.velocity * other.mass
+            (self.velocity * self.mass + other.velocity * other.mass)
             / total
         )
         self.radius = (self.radius ** 3 + other.radius ** 3) ** (1.0 / 3.0)

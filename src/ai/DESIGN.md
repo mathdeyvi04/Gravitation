@@ -2,21 +2,12 @@
 
 Documento de decisões de design do projeto de RL. Escrito antes de
 qualquer linha de código, para servir de contrato entre as fases.
-Alterações devem ser justificadas por experimento, não por intuição.
-
-> **Nota de manutenção.** Este documento passou a **referenciar** as
-> constantes existentes no código (`SimulationConfig`, `Configs`,
-> `Gravitation`, `Rocket`) em vez de repetir valores literais. A fonte
-> da verdade é o código; os valores entre parênteses refletem o estado
-> na data desta revisão. Divergências entre o design original e o
-> código atual estão marcadas com **Δ** e devem ser resolvidas — ou
-> por mudança de código, ou por decisão explícita registrada aqui.
 
 ## 1. Objetivo do agente
 
 Levar o foguete de um estado acoplado à superfície de um corpo celeste
-até uma órbita estável ao redor desse corpo, com o MÍNIMO de recursos
-(combustível e tempo) gastos.
+até uma órbita estável (não necessariamente circular) ao redor desse corpo, com o MÍNIMO de recursos
+(combustível e tempo) gastos. E também ser capaz de pousar corretamente em outro hospedeiro.
 
 Detalhes:
 
@@ -25,9 +16,7 @@ Detalhes:
   revolução completa (2π radianos de progresso angular acumulado).
   Não exige excentricidade zero — órbitas elípticas são válidas.
 - O agente deve ser capaz de partir do repouso na superfície (decolar),
-  manobrar para a órbita alvo, e opcionalmente retornar (pouso). Pouso
-  fica fora do escopo do primeiro treino, mas a arquitetura do ambiente
-  não deve impedi-lo no futuro.
+  manobrar para a órbita alvo, e opcionalmente retornar (pouso).
 - O raio-alvo é um parâmetro ajustável α = r_ref / R_body, com valor
   padrão α = 2.5 e faixa válida [1.5, 8.0]. O agente deve funcionar
   para qualquer α nessa faixa.
@@ -38,16 +27,9 @@ Inserção orbital tem solução analítica (Hohmann), mas:
 
 - o foguete está acoplado e precisa decolar antes;
 - empuxo é binário (on/off), sem modulação fina;
-- a rotação consome combustível (ver §4), então até mirar o bico é uma
+- a rotação consome combustível, então até mirar o bico é uma
   decisão de orçamento;
 - queremos minimizar esforço e combustível, não apenas atingir o alvo.
-
-**Δ** O argumento original "a dinâmica tem softening, desviando da
-solução Kepleriana pura" não se aplica com
-`SimulationConfig.gravitational_softening = 0` (valor atual): em dois
-corpos a dinâmica é Kepleriana exata. O softening volta a ser
-justificativa se o parâmetro voltar a ser positivo (design original
-previa 12.0 — ver §10).
 
 PPO é adequado: simples, estável, e projetado para espaços de ação
 discretos.
@@ -69,11 +51,8 @@ Discreto, 6 ações:
   constante (`Rocket.rotation_speed`, 120°/s por default).
 - Propulsão: binária. Consome combustível por passo enquanto ativa.
 
-## 4. Combustível
-
 Recurso finito por episódio. Os parâmetros vivem em
-`SimulationConfig`: `fuel_max`, `fuel_thrust_rate`, `fuel_rotation_rate`
-(valores em §10).
+`SimulationConfig`: `fuel_max`, `fuel_thrust_rate`, `fuel_rotation_rate`.
 
 Consumo por passo fixo (`dt = Configs.fixed_timestep`):
 
@@ -81,25 +60,6 @@ Consumo por passo fixo (`dt = Configs.fixed_timestep`):
 |---|---|
 | empuxo ativo | `fuel_thrust_rate · dt` |
 | rotação ativa | `fuel_rotation_rate · dt` |
-
-- **Δ Rotação consome combustível.** O DESIGN original tratava o giro
-  como gratuito ("girar não consome combustível, apenas tempo"). O
-  código atual, em `Rocket.fixed_update`, debita
-  `fuel_rotation_rate · dt` por passo de rotação. Consequência: o
-  giro é penalizado duas vezes — pelo custo denso de shaping
-  `c_rotate` (§6) **e** pelo consumo de tanque. Ver §6 para a
-  decisão pendente.
-- **Δ Sem combustível, nem giro nem empuxo produzem efeito.**
-  `Rocket.fixed_update` retorna cedo quando `fuel <= 0`, congelando
-  orientação e propulsão. O flag `_thrust_authorized` é gravado
-  **antes** do débito, para que o último passo de queima autorizado
-  produza aceleração mesmo que o débito zere o tanque.
-- Episódio trunca em 3600 passos (30 s de simulação a 120 Hz).
-  Combustível acaba antes do tempo se o agente queimar sem parar — o
-  que é intencional.
-- Se o combustível esgota antes do sucesso, o episódio termina em
-  falha, mesmo que o foguete esteja em trajetória promissora. Isso
-  força a política a planejar o uso do recurso, não apenas queimar.
 
 ## 5. Espaço de observação
 
@@ -110,25 +70,17 @@ Sejam `μ = G·(M_target + M_rocket)`,
 `r_ref = α · R_target`, `v_ref = sqrt(μ/r_ref)`,
 `ω_ref = v_ref/r_ref`, `a_g_ref = μ/r_ref²`.
 
-> **Nota sobre μ.** A normalização usa μ da soma das massas,
-> coerente com `RelativeOrbit2D.from_bodies`. Os coeficientes de
-> acoplagem exibidos no inspector (`Rocket.attach_coeficient` e
-> `Rocket.detach_coeficient`) usam `μ = G·host.mass` — aproximação
-> desprezível para planetas (`M_rocket = 40` vs. `M_target` em
-> `_PLANET_MASS_RANGE`), mas não idêntica. Alinhar os dois caminhos
-> é refinamento opcional; a observação segue a definição acima.
-
 | idx | nome | fórmula | faixa típica |
 |-----|------|---------|--------------|
-| 0 | r/r_ref                    | distância / raio-alvo | [0, 8] |
-| 1 | v_r/v_ref                  | velocidade radial / v_circ | [-5, 5] |
-| 2 | v_t/v_ref                  | velocidade tangencial / v_circ | [-5, 5] |
-| 3 | sin(θ_rel)                 | seno do ângulo bico−radial | [-1, 1] |
-| 4 | cos(θ_rel)                 | cosseno do ângulo bico−radial | [-1, 1] |
-| 5 | docked                     | 1 se acoplado | {0, 1} |
-| 6 | fuel_remaining/fuel_max    | fração de combustível restante | [0, 1] |
-| 7 | log10(a_thrust/a_g_ref)    | razão empuxo/gravidade local | [-1, 2] |
-| 8 | log10(ω_rocket/ω_ref)      | razão giro/vel. angular orbital | [-1, 2] |
+| 0 | r/r_ref                    | distância / raio-alvo | [1.5, 8]     |
+| 1 | v_r/v_ref                  | velocidade radial / v_circ | [-5, 5]      |
+| 2 | v_t/v_ref                  | velocidade tangencial / v_circ | [-5, 5]      |
+| 3 | sin(θ_rel)                 | seno do ângulo bico−radial | [-1, 1]      |
+| 4 | cos(θ_rel)                 | cosseno do ângulo bico−radial | [-1, 1]      |
+| 5 | docked                     | 1 se acoplado | {0, 1}       |
+| 6 | fuel_remaining/fuel_max    | fração de combustível restante | [0, 1]       |
+| 7 | log10(a_thrust/a_g_ref)    | razão empuxo/gravidade local | [-1, 2]      |
+| 8 | log10(ω_rocket/ω_ref)      | razão giro/vel. angular orbital | [-1, 2]      |
 
 ### Justificativa de cada índice
 
@@ -152,16 +104,6 @@ Sejam `μ = G·(M_target + M_rocket)`,
 - **8: rotation_ratio em log10.** Razão entre velocidade angular do
   foguete e velocidade angular orbital. Diz "quão rápido consigo girar
   comparado ao período orbital". Mesma lógica.
-
-### Justificativa do que NÃO está
-
-- **Sem posição absoluta no mundo.** O problema é relativo ao alvo.
-  Coordenadas absolutas introduziriam ruído irrelevante.
-- **Sem memória do passado.** PPO é Markoviano por construção; (r, v)
-  determinam completamente o estado orbital.
-- **Sem elementos orbitais explícitos (e, a).** Redundantes — já
-  contidos em (r, v_r, v_t). Calcular e dar de graça adiciona apenas
-  dependência entre features que a rede precisaria desaprender.
 
 ## 6. Função de recompensa
 
@@ -270,10 +212,6 @@ elíptica, apertados o bastante para excluir trajetórias de escape.
 Foguete acoplado à superfície do alvo, em ângulo radial aleatório.
 Velocidade relativa zero. Ângulo do foguete = ângulo radial.
 
-O acoplamento (`Rocket.dock_to`) é uma colisão perfeitamente
-inelástica: o par passa a compartilhar a velocidade do centro de
-massa, preservando o momento linear do sistema. Como o hospedeiro
-orbita, o foguete herda essa velocidade orbital.
 
 ## 9. Randomização entre episódios
 
@@ -281,12 +219,12 @@ Alvos do ambiente de RL (não confundir com a randomização da cena de
 teste em `Gravitation`, que hoje usa valores compatíveis com a tabela
 abaixo mas pode divergir):
 
-| parâmetro | distribuição |
-|---|---|
-| massa do alvo     | uniforme, faixa `Gravitation._PLANET_MASS_RANGE` |
+| parâmetro | distribuição                                       |
+|---|----------------------------------------------------|
+| massa do alvo     | uniforme, faixa `Gravitation._PLANET_MASS_RANGE`   |
 | raio do alvo      | uniforme, faixa `Gravitation._PLANET_RADIUS_RANGE` |
-| ângulo de acoplagem | uniforme em [0, 2π) |
-| α = r_ref / R_body | uniforme [2.0, 5.0] |
+| ângulo de acoplagem | uniforme em [0, 2π)                                |
+| α = r_ref / R_body | uniforme [1.5, 5.0]                                |
 
 α é randomizado apenas durante treino. Em avaliação e em produção, α
 é fixado (padrão 2.5) ou ajustado por teclado.
@@ -352,14 +290,3 @@ depois de um pipeline funcional.
 4. `watch_training` mostra a política em ação sem erros.
 5. O controle por teclado altera α em tempo real e o agente responde
    corretamente (tenta a nova órbita).
-
-## 14. Fora de escopo (primeira rodada)
-
-- Controle contínuo de empuxo.
-- Múltiplos corpos simultâneos (só um alvo por episódio).
-- Currículo de dificuldade.
-- Multiprocessamento real (SubprocVecEnv).
-- Inferência em GPU.
-- Pouso como objetivo formal (a arquitetura não impede, mas o treino
-  inicial não o requer).
-- Gerenciamento de combustível com reabastecimento.
