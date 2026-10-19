@@ -8,27 +8,31 @@ from src.engine.camera import Camera2D
 import pygame
 
 class Application(ABC):
-    """Esqueleto de uma aplicação Pygame com timestep fixo.
+    """@brief Esqueleto de uma aplicação Pygame com timestep fixo.
 
-    Responsabilidades:
-    - Inicializar e finalizar o Pygame.
+    @details Responsabilidades:
+
+    - Inicializar e finalizar os subsistemas que usa.
     - Criar a janela a partir de `Configs`.
     - Executar o loop principal: entrada, update, fixed_update, render.
-    - Coordenar `Input`, `Time` e `Renderer`.
+    - Coordenar `Input`, `Clock`, `Renderer`, `Camera2D` e `Background`.
 
     Subclasses devem implementar `update`, `fixed_update` e `render`.
     """
 
     def __init__(self, config: Configs) -> None:
-        """Inicializa display, font e os subsistemas da aplicação.
+        """@brief Inicializa display, font e os subsistemas da aplicação.
 
-        Não chamamos `pygame.init()` porque ele sobe também o mixer de
-        áudio, que não usamos — e cujo shutdown trava em várias
+        @details Não chamamos `pygame.init()` porque ele sobe também o
+        mixer de áudio, que não usamos — e cujo shutdown trava em várias
         combinações de driver. Ver `shutdown()` para a contrapartida.
+
+        @param config Configuração da janela e do loop.
         """
         self.config = config
         self.running = False
 
+        # Inicialização seletiva: só os subsistemas efetivamente usados.
         pygame.display.init()
         pygame.font.init()
         self.screen = pygame.display.set_mode((config.width, config.height))
@@ -52,11 +56,13 @@ class Application(ABC):
         )
 
     def run(self) -> None:
-        """Executa o loop principal até `stop()` ou quit ser solicitado.
+        """@brief Executa o loop principal até `stop()` ou quit ser solicitado.
 
-        Cada iteração: mede o tempo, lê entradas, chama `update` com delta
-        variável, drena os passos fixos acumulados, desenha o fundo (que
-        pode limpar a tela), chama `render` e apresenta.
+        @details Cada iteração: mede o tempo, lê entradas, chama `update`
+        com delta variável, drena os passos fixos acumulados, desenha o
+        fundo (que pode limpar a tela), chama `render` e apresenta. O
+        `try/finally` garante que `shutdown()` rode mesmo se uma
+        exceção escapar de uma subclasse.
         """
         self.running = True
         try:
@@ -69,6 +75,8 @@ class Application(ABC):
 
                 self.update(self.clock.delta_time)
 
+                # Passos fixos: `has_fixed_step` respeita `max_fixed_steps`,
+                # evitando a espiral da morte após um stall.
                 while self.clock.has_fixed_step():
                     self.fixed_update(self.clock.fixed_timestep)
                     self.clock.consume_fixed_step()
@@ -82,41 +90,48 @@ class Application(ABC):
 
     @abstractmethod
     def update(self, delta_time: float) -> None:
-        """Atualização com delta variável, uma vez por frame.
+        """@brief Atualização com delta variável, uma vez por frame.
 
-        Use para lógica que não exige passo fixo: animações, HUD,
-        interpolação visual, comportamento dirigido por tempo real.
+        @details Use para lógica que não exige passo fixo: animações,
+        HUD, interpolação visual, comportamento dirigido por tempo real.
+
+        @param delta_time Tempo desde o último frame, em segundos.
         """
 
     @abstractmethod
     def fixed_update(self, fixed_delta_time: float) -> None:
-        """Atualização determinística em passo fixo.
+        """@brief Atualização determinística em passo fixo.
 
-        Pode rodar zero ou mais vezes por frame, sempre com o mesmo
-        `fixed_delta_time`. Use para física, integração numérica
+        @details Pode rodar zero ou mais vezes por frame, sempre com o
+        mesmo `fixed_delta_time`. Use para física, integração numérica
         (Euler, RK4, Verlet) e qualquer coisa que precise de
         reprodutibilidade.
+
+        @param fixed_delta_time Passo fixo em segundos.
         """
 
     @abstractmethod
     def render(self, renderer: Renderer) -> None:
-        """Desenha o estado atual através de `renderer`.
+        """@brief Desenha o estado atual através de `renderer`.
 
-        Não deve alterar o estado da simulação — apenas apresentá-lo.
+        @details Não deve alterar o estado da simulação — apenas
+        apresentá-lo.
+
+        @param renderer Renderizador alvo.
         """
 
     def stop(self) -> None:
-        """Solicita o encerramento do loop principal."""
+        """@brief Solicita o encerramento do loop principal."""
         self.running = False
 
     def shutdown(self) -> None:
-        """Finaliza os subsistemas que a aplicação inicializou.
+        """@brief Finaliza os subsistemas que a aplicação inicializou.
 
-        Fecha na ordem inversa de `__init__` para garantir que nenhuma
-        superfície/fonte fique pendurada enquanto o display ainda existe.
-        Não chamamos `pygame.quit()` porque ele desmontaria também o
-        mixer — que nunca inicializamos — e esse é o ponto onde o
-        encerramento costuma travar em certos drivers.
+        @details Fecha na ordem inversa de `__init__` para garantir que
+        nenhuma superfície/fonte fique pendurada enquanto o display
+        ainda existe. Não chamamos `pygame.quit()` porque ele
+        desmontaria também o mixer — que nunca inicializamos — e esse é
+        o ponto onde o encerramento costuma travar em certos drivers.
         """
         if pygame.font.get_init():
             pygame.font.quit()

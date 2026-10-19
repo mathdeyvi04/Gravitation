@@ -6,6 +6,11 @@ import pygame
 
 
 class RelativeBody(Protocol):
+    """@brief Contrato mínimo para um corpo participar do cálculo orbital.
+
+    @details Qualquer objeto com `position`, `velocity` e `mass`
+    (ex.: `MassObject`, `Rocket`) satisfaz o protocolo via duck typing.
+    """
     position: pygame.Vector2
     velocity: pygame.Vector2
     mass: float
@@ -13,10 +18,12 @@ class RelativeBody(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class RelativeOrbit2D:
-    """
-    Estado orbital relativo instantâneo entre dois corpos.
+    """@brief Estado orbital relativo instantâneo entre dois corpos.
 
-    Todos os cálculos permanecem em coordenadas cartesianas (x, y).
+    @details Todos os cálculos permanecem em coordenadas cartesianas
+    (x, y); nenhum ângulo absoluto é exposto, só a base local
+    (radial, tangencial). Imutável e com `__slots__` para minimizar o
+    custo por consulta do inspector.
     """
 
     relative_position: pygame.Vector2
@@ -63,6 +70,20 @@ class RelativeOrbit2D:
         reference: RelativeBody,
         gravitational_constant: float,
     ) -> "RelativeOrbit2D":
+        """@brief Calcula o estado orbital de `body` em relação a `reference`.
+
+        @details Usa o problema de dois corpos com μ = G·(m1+m2) e
+        devolve todos os elementos escalares derivados — distância,
+        velocidades radial/tangencial, excentricidade, eixos, período
+        e Δv de escape. Se a geometria for degenerada (corpos
+        coincidentes ou μ não positivo), devolve um estado com
+        `orbit_type="Indefinido"` e todos os elementos `None`.
+
+        @param body Corpo cuja órbita é analisada.
+        @param reference Corpo tomado como foco.
+        @param gravitational_constant Constante G do simulador.
+        @return Estado orbital relativo instantâneo.
+        """
 
         relative_position = (
             body.position - reference.position
@@ -119,10 +140,17 @@ class RelativeOrbit2D:
             - relative_position.y * relative_velocity.x
         )
 
+        # Projeções da velocidade relativa na base local:
+        #   radial     → componente ao longo de r̂ (positiva = afastando)
+        #   tangencial → componente perpendicular (h/r, assinada pelo
+        #                sentido de rotação)
         radial_velocity = r_dot_v / distance
         tangential_velocity = angular_momentum / distance
 
-        # Vetor excentricidade em coordenadas cartesianas.
+        # Vetor excentricidade em coordenadas cartesianas:
+        #   e⃗ = [(v² − μ/r)·r⃗ − (r⃗·v⃗)·v⃗] / μ
+        # A magnitude ||e⃗|| classifica a órbita e o vetor em si aponta
+        # para o periapsis (não usado aqui, mas é o motivo da forma).
         eccentricity_x = (
             (velocity_squared - mu / distance)
             * relative_position.x
@@ -140,11 +168,16 @@ class RelativeOrbit2D:
             + eccentricity_y * eccentricity_y
         )
 
-        # p = h² / μ
+        # p = h² / μ (semilatus rectum) — parâmetro usado no lugar de
+        # `a` porque funciona também em parábolas e hipérboles, onde
+        # `a` é indefinido ou negativo.
         semi_latus_rectum = (
             angular_momentum * angular_momentum
         ) / mu
 
+        # r_p = p / (1 + e): raio do periapsis, definido para qualquer
+        # tipo de órbita (só deixa de fazer sentido geométrico se e < 0,
+        # o que não ocorre para e calculado como magnitude).
         periapsis_distance = (
             semi_latus_rectum
             / (1.0 + eccentricity)
@@ -158,6 +191,8 @@ class RelativeOrbit2D:
 
         semi_major_axis: float | None
 
+        # ε ≠ 0 ⇒ a = −μ / (2ε). No limite ε → 0 (parábola), `a` tende
+        # a infinito e é reportado como indefinido.
         if abs(specific_energy) > 1e-12:
             semi_major_axis = (
                 -mu
@@ -175,6 +210,11 @@ class RelativeOrbit2D:
         else:
             apoapsis_distance = None
 
+        # Classificação em quatro faixas. As tolerâncias 1e-6 e 1e-6
+        # em torno de e=0 e e=1 absorvem erro de ponto flutuante para
+        # que uma órbita quase-circular não seja rotulada "Elíptica"
+        # por causa de ruído numérico, e uma quase-parabólica não
+        # oscile entre "Elíptica" e "Hiperbólica" a cada frame.
         if eccentricity < 1e-6:
             orbit_type = "Circular"
         elif eccentricity < 1.0 - 1e-6:
@@ -184,6 +224,12 @@ class RelativeOrbit2D:
         else:
             orbit_type = "Hiperbólica"
 
+        # Δv de escape: o quanto falta para a velocidade atingir a de
+        # escape v_esc = sqrt(2μ/r). Como o Δv é paralelo à velocidade
+        # atual (mesma direção, módulo maior), o vetor resultante é
+        # apenas `v⃗ · (v_esc − |v|)/|v|` — e o mesmo fator escala as
+        # componentes radial e tangencial. Só faz sentido para órbitas
+        # ligadas (e < 1) e velocidade não nula.
         if eccentricity < 1.0 - 1e-6 and relative_speed > 1e-6:
             escape_speed = math.sqrt(2.0 * mu / distance)
             scale = (escape_speed - relative_speed) / relative_speed

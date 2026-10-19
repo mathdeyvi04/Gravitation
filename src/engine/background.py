@@ -4,10 +4,10 @@ import pygame
 
 
 class Background:
-    """Fundo repetível que cobre a janela e acompanha a câmera.
+    """@brief Fundo repetível que cobre a janela e acompanha a câmera.
 
-    A textura é disposta em mosaico numa superfície do tamanho da
-    janela mais uma margem de um tile em cada eixo. A cada frame o
+    @details A textura é disposta em mosaico numa superfície do tamanho
+    da janela mais uma margem de um tile em cada eixo. A cada frame o
     mosaico é deslocado por `-camera_pos * parallax`, tomado módulo o
     tamanho do tile. O módulo garante que o padrão sempre se repita
     continuamente — sem bordas vazias, sem saltos visíveis.
@@ -33,12 +33,22 @@ class Background:
         window_size: tuple[int, int] = None,
         parallax: float = 0.2,
     ) -> None:
-        """Carrega a textura, monta o mosaico e guarda a paralaxe.
+        """@brief Carrega a textura, monta o mosaico e guarda a paralaxe.
 
-        `window_size` é o tamanho fixo da janela. `parallax` é o fator
-        de profundidade (0.0 = fixo na tela; 1.0 = acompanha o mundo).
+        @details Se `path` for fornecido, a textura é carregada, o
+        mosaico é pré-montado e o fundo opera em modo imagem. Caso
+        contrário, cai para um preenchimento de cor sólida em
+        `draw`/`clear`.
+
+        @param background_color Cor usada no modo sem imagem.
+        @param path Caminho da textura; `None` desliga o modo imagem.
+        @param window_size Tamanho fixo da janela, em pixels.
+        @param parallax Fator de profundidade (0.0 = fixo na tela;
+            1.0 = acompanha o mundo).
         """
 
+        # `nan` força o primeiro `update` a recalcular o offset —
+        # qualquer `cx == nan` é `False`, então o early-out não dispara.
         self._last_cam_x = float("nan")
         self._last_cam_y = float("nan")
 
@@ -60,7 +70,15 @@ class Background:
         tile: pygame.Surface,
         window_size: tuple[int, int],
     ) -> pygame.Surface:
-        """Pré-monta o mosaico em uma superfície (W+tw, H+th)."""
+        """@brief Pré-monta o mosaico em uma superfície `(W+tw, H+th)`.
+
+        @details A margem extra de um tile em cada eixo garante que o
+        deslocamento por módulo nunca exponha uma faixa vazia na borda.
+
+        @param tile Tile a repetir.
+        @param window_size Tamanho da janela, em pixels.
+        @return Superfície com o mosaico montado.
+        """
         tw, th = tile.get_size()
         width, height = window_size
         canvas = pygame.Surface((width + tw, height + th)).convert()
@@ -70,11 +88,15 @@ class Background:
         return canvas
 
     def update(self, camera_position: pygame.Vector2) -> None:
-        """Recalcula o offset a partir da posição da câmera.
+        """@brief Recalcula o offset a partir da posição da câmera.
 
-        O módulo em Python sempre devolve valor no intervalo [0, tile),
-        então o offset fica sempre dentro de um tile — é o que permite
-        cobrir a tela com um único `blit`.
+        @details O módulo em Python sempre devolve valor no intervalo
+        `[0, tile)`, então o offset fica sempre dentro de um tile — é o
+        que permite cobrir a tela com um único `blit` no `draw`. O
+        early-out por posição da câmera evita recomputar quando a
+        câmera não se moveu.
+
+        @param camera_position Posição atual da câmera em world_space.
         """
         if not self.is_img:
             return
@@ -82,6 +104,7 @@ class Background:
         cx = camera_position.x
         cy = camera_position.y
 
+        # Câmera parada: offset inalterado, nada a recalcular.
         if cx == self._last_cam_x and cy == self._last_cam_y:
             return
 
@@ -92,7 +115,14 @@ class Background:
         self._offset_y = (cy * self._parallax) % self._tile_h
 
     def draw(self, renderer: Renderer) -> None:
-        """Blita o mosaico cobrindo a tela inteira."""
+        """@brief Blita o mosaico cobrindo a tela inteira.
+
+        @details No modo imagem, o `blit` usa o offset negativo para
+        "puxar" o mosaico para trás conforme a câmera avança. No modo
+        cor, apenas preenche a superfície.
+
+        @param renderer Renderizador alvo.
+        """
         if self.is_img:
             renderer.surface.blit(
                 self._canvas,

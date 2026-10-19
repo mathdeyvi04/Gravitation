@@ -1,10 +1,10 @@
-"""Captura periódica de snapshots do tracemalloc.
+"""@brief Captura periódica de snapshots do tracemalloc.
 
-O `tracemalloc` já sabe gravar e ler snapshots (`Snapshot.dump` /
-`Snapshot.load`). Este módulo organiza *quando* capturar — em
-intervalos regulares, com limite opcional — e *com que metadados*,
-para que o script de análise correlacione alocações a eventos da
-simulação.
+@details O `tracemalloc` já sabe gravar e ler snapshots
+(`Snapshot.dump` / `Snapshot.load`). Este módulo organiza *quando*
+capturar — em intervalos regulares, com limite opcional — e *com que
+metadados*, para que o script de análise correlacione alocações a
+eventos da simulação.
 """
 
 import json
@@ -16,19 +16,18 @@ from typing import Any, Optional
 
 
 class MemoryMonitor:
-    """Grava snapshots rotulados do tracemalloc automaticamente.
+    """@brief Grava snapshots rotulados do tracemalloc automaticamente.
 
-    Cada `capture()` produz dois arquivos com o mesmo nome-base:
+    @details Cada `capture()` produz dois arquivos com o mesmo nome-base:
 
-    - `<timestamp>_<label>.snap` — snapshot binário do tracemalloc,
+    - `<timestamp>_<label>.snap`: snapshot binário do tracemalloc,
       consumido por `tracemalloc.Snapshot.load` no script de análise.
-    - `<timestamp>_<label>.json` — rótulo, hora, profundidade de
+    - `<timestamp>_<label>.json`: rótulo, hora, profundidade de
       traceback e `context` arbitrário passado pelo chamador.
 
     O rastreamento e o relógio interno são controlados pelo monitor:
-    `should_capture()` diz se o intervalo venceu, e `capture()` grava
-    e agenda o próximo. O chamador só precisa consultar uma vez por
-    frame.
+    `should_capture()` diz se o intervalo venceu, e `capture()` grava e
+    agenda o próximo. O chamador só precisa consultar uma vez por frame.
     """
 
     __slots__ = (
@@ -48,6 +47,20 @@ class MemoryMonitor:
             max_dumps: Optional[int] = None,
             start_immediately: bool = True,
     ) -> None:
+        """@brief Configura o monitor e (opcionalmente) liga o rastreamento.
+
+        @details Cria uma subpasta `session_<timestamp>` dentro de
+        `dump_dir` para isolar os snapshots desta execução — assim
+        sessões distintas não se misturam no diretório raiz.
+
+        @param dump_dir Diretório raiz onde a subpasta da sessão é
+            criada.
+        @param traceback_depth Frames de traceback por alocação.
+        @param interval Intervalo entre capturas automáticas, em
+            segundos.
+        @param max_dumps Limite de capturas por sessão; `None` desliga.
+        @param start_immediately Liga o `tracemalloc` já no construtor.
+        """
         if traceback_depth < 1:
             raise ValueError("traceback_depth deve ser >= 1.")
         if interval <= 0.0:
@@ -73,33 +86,59 @@ class MemoryMonitor:
 
     @property
     def active(self) -> bool:
+        """@brief Indica se o `tracemalloc` está rastreando agora.
+
+        @return `True` se `tracemalloc.is_tracing()` for verdadeiro.
+        """
         return tracemalloc.is_tracing()
 
     @property
     def session_dir(self) -> Path:
-        """Subpasta onde os snapshots desta execução estão sendo gravados."""
+        """@brief Subpasta onde os snapshots desta execução são gravados.
+
+        @return Caminho `dump_dir/session_<timestamp>`.
+        """
         return self.dump_dir
 
     @property
     def count(self) -> int:
+        """@brief Número de capturas já realizadas nesta sessão.
+
+        @return Contador interno de `capture()`.
+        """
         return self._counter
 
     @property
     def exhausted(self) -> bool:
+        """@brief Indica se a cota de capturas já foi atingida.
+
+        @details `False` quando `max_dumps` é `None`.
+
+        @return `True` se `_counter >= max_dumps`.
+        """
         return self.max_dumps is not None and self._counter >= self.max_dumps
 
     def start(self) -> None:
-        """Liga o tracemalloc e agenda a primeira captura para já."""
+        """@brief Liga o tracemalloc e agenda a primeira captura para já."""
         if not tracemalloc.is_tracing():
             tracemalloc.start(self.traceback_depth)
+        # `_next_capture_at = 0` faz o próximo `should_capture()` ser
+        # imediatamente `True` — útil para capturar um baseline.
         self._next_capture_at = 0.0
 
     def stop(self) -> None:
+        """@brief Desliga o tracemalloc, se estiver rastreando."""
         if tracemalloc.is_tracing():
             tracemalloc.stop()
 
     def should_capture(self) -> bool:
-        """True quando o intervalo venceu e ainda há cota disponível."""
+        """@brief Indica se já é hora de capturar outro snapshot.
+
+        @details `True` quando o intervalo venceu e ainda há cota
+        disponível.
+
+        @return `True` se `capture()` deve ser chamado agora.
+        """
         if self.exhausted:
             return False
         return perf_counter() >= self._next_capture_at
@@ -109,10 +148,17 @@ class MemoryMonitor:
         label: str = "",
         context: Optional[dict[str, Any]] = None,
     ) -> Path:
-        """Grava um snapshot e agenda o próximo.
+        """@brief Grava um snapshot e agenda o próximo.
 
-        Se o rastreamento estiver desligado, liga antes de capturar —
-        o primeiro `capture()` sempre produz dados úteis como baseline.
+        @details Se o rastreamento estiver desligado, liga antes de
+        capturar — o primeiro `capture()` sempre produz dados úteis
+        como baseline.
+
+        @param label Rótulo usado no nome do arquivo; se vazio, usa
+            `snap<NNN>` com o contador.
+        @param context Metadados arbitrários salvos no `.json` ao lado
+            do snapshot.
+        @return Caminho do `.snap` gravado.
         """
         if not tracemalloc.is_tracing():
             tracemalloc.start(self.traceback_depth)
@@ -142,5 +188,8 @@ class MemoryMonitor:
             encoding="utf-8",
         )
 
+        # Agenda o próximo `should_capture()` para `interval` segundos
+        # depois do *fim* desta captura — capturas pesadas não aceleram
+        # o relógio artificialmente.
         self._next_capture_at = perf_counter() + self.interval
         return snap_path

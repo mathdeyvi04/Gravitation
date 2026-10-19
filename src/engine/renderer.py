@@ -7,10 +7,11 @@ import pygame
 
 
 class Renderer:
-    """Desenha primitivas e texto numa `pygame.Surface`.
+    """@brief Desenha primitivas e texto numa `pygame.Surface`.
 
-    Cada methods é uma operação independente sobre `self.surface`; não há
-    estado implícito de câmera nem ciclo de frame obrigatório.
+    @details Cada método é uma operação independente sobre
+    `self.surface`; não há estado implícito de câmera nem ciclo de frame
+    obrigatório.
     """
 
     def __init__(
@@ -18,10 +19,11 @@ class Renderer:
         surface: pygame.Surface,
         text_cache_size: int = 256,
     ) -> None:
-        """Liga o renderizador a `surface`.
+        """@brief Liga o renderizador a `surface`.
 
-        `text_cache_size` limita quantas superfícies de texto ficam em
-        cache (LRU); use 0 para desligar o cache de texto.
+        @param surface Superfície alvo dos desenhos.
+        @param text_cache_size Limite de superfícies de texto em cache
+            (LRU). Use `0` para desligar o cache de texto.
         """
         self.surface = surface
         if not pygame.font.get_init():
@@ -40,11 +42,27 @@ class Renderer:
         rotation: float,
         cache_key: Optional[tuple],
     ) -> pygame.Surface:
-        """Renderiza `text` com `font`, usando cache LRU quando aplicável."""
+        """@brief Renderiza `text` com `font`, usando cache LRU quando aplicável.
+
+        @details `cache_key` só é fornecido quando a fonte é resolvida
+        internamente — assim chamadas com uma `Font` explícita do
+        chamador não poluem o cache com chaves que não a identificam.
+
+        @param text Texto a renderizar.
+        @param font Fonte usada.
+        @param color Cor do texto.
+        @param antialias Habilita suavização.
+        @param background Cor de fundo opcional.
+        @param rotation Rotação em graus (0 = sem rotação).
+        @param cache_key Chave de cache, ou `None` para não cachear.
+        @return Superfície com o texto renderizado.
+        """
         if cache_key is not None and self._text_cache_size > 0:
             cache = self._text_cache
             cached = cache.get(cache_key)
             if cached is not None:
+                # `move_to_end` mantém a política LRU: o hit mais recente
+                # passa a ser o último a ser descartado.
                 cache.move_to_end(cache_key)
                 return cached
         else:
@@ -56,6 +74,7 @@ class Renderer:
 
         if cache is not None:
             cache[cache_key] = surface
+            # `popitem(last=False)` descarta o item menos usado.
             if len(cache) > self._text_cache_size:
                 cache.popitem(last=False)
         return surface
@@ -63,11 +82,14 @@ class Renderer:
     # -- Frame --------------------------------------------------------
 
     def clear(self, color: tuple[int, int, int] = (0, 0, 0)) -> None:
-        """Preenche toda a superfície com `color`."""
+        """@brief Preenche toda a superfície com `color`.
+
+        @param color Cor de preenchimento.
+        """
         self.surface.fill(color)
 
     def present(self) -> None:
-        """Envia o buffer desenhado para a tela."""
+        """@brief Envia o buffer desenhado para a tela."""
         pygame.display.flip()
 
     # -- Texto --------------------------------------------------------
@@ -80,14 +102,18 @@ class Renderer:
         bold: bool = False,
         italic: bool = False,
     ) -> pygame.font.Font:
-        """Retorna (e memoriza) uma `pygame.font.Font`.
+        """@brief Retorna (e memoriza) uma `pygame.font.Font`.
 
-        `source` aceita três formas:
-        - `None`: fonte padrão embutida do pygame;
-        - caminho para um arquivo `.ttf`/`.otf` existente: carregado do
-          disco via `pygame.font.Font`;
-        - qualquer outro texto: interpretado como nome de fonte do sistema
-          via `pygame.font.SysFont`.
+        @details `source` aceita três formas: `None` (fonte padrão do
+        pygame); caminho para `.ttf`/`.otf` existente (carregada do
+        disco); ou qualquer outro texto (interpretado como nome de
+        fonte do sistema via `SysFont`).
+
+        @param size Tamanho em pontos.
+        @param source Origem da fonte, conforme descrito.
+        @param bold Negrito.
+        @param italic Itálico.
+        @return Instância de `pygame.font.Font` memorizada.
         """
         key = (source, size, bold, italic)
         cached = self._font_cache.get(key)
@@ -118,7 +144,17 @@ class Renderer:
         bold: bool = False,
         italic: bool = False,
     ) -> tuple[int, int]:
-        """Devolve `(largura, altura)` que `text` ocuparia na fonte dada."""
+        """@brief Devolve `(largura, altura)` que `text` ocuparia na fonte.
+
+        @param text Texto a medir.
+        @param size Tamanho em pontos (ignorado se `font` for fornecida).
+        @param font Fonte explícita; se `None`, resolvida por `size` e
+            `font_name`.
+        @param font_name Nome/caminho da fonte (ver `get_font`).
+        @param bold Negrito.
+        @param italic Itálico.
+        @return Dimensões `(largura, altura)` em pixels.
+        """
         if font is None:
             font = self.get_font(size, font_name, bold=bold, italic=italic)
         return font.size(text)
@@ -139,14 +175,30 @@ class Renderer:
         background: Optional[tuple[int, int, int]] = None,
         rotation: float = 0.0,
     ) -> pygame.Rect:
-        """Renderiza `text` e o blita em `position`.
+        """@brief Renderiza `text` e o blita em `position`.
 
-        `anchor` é qualquer atributo de `pygame.Rect` (por exemplo
-        `"center"`, `"midleft"`, `"topright"`). Devolve o `Rect` que foi
+        @details `anchor` é qualquer atributo de `pygame.Rect` (ex.:
+        `"center"`, `"midleft"`, `"topright"`). Devolve o `Rect`
         efetivamente desenhado.
+
+        @param text Texto a desenhar.
+        @param position Ponto de ancoragem, em screen_space.
+        @param color Cor do texto.
+        @param size Tamanho em pontos.
+        @param font Fonte explícita; desativa o cache de texto.
+        @param font_name Nome/caminho da fonte (ver `get_font`).
+        @param bold Negrito.
+        @param italic Itálico.
+        @param anchor Atributo de `pygame.Rect` usado como âncora.
+        @param antialias Habilita suavização.
+        @param background Cor de fundo opcional.
+        @param rotation Rotação em graus.
+        @return `Rect` ocupado pelo texto na superfície.
         """
         if font is None:
             font = self.get_font(size, font_name, bold=bold, italic=italic)
+            # Cache só quando a fonte é resolvida por parâmetros
+            # reproduzíveis — `Font` explícita fica de fora.
             cache_key = (
                 text,
                 font_name,
@@ -178,7 +230,12 @@ class Renderer:
         rect: pygame.Rect,
         width: int = 0,
     ) -> None:
-        """Desenha um retângulo; `width=0` preenche, `width>0` desenha a borda."""
+        """@brief Desenha um retângulo.
+
+        @param color Cor do traço/preenchimento.
+        @param rect Retângulo em screen_space.
+        @param width `0` preenche; `>0` desenha apenas a borda.
+        """
         pygame.draw.rect(self.surface, color, rect, width)
 
     def draw_circle(
@@ -188,7 +245,13 @@ class Renderer:
         radius: float,
         width: int = 0,
     ) -> None:
-        """Desenha um círculo; `width=0` preenche, `width>0` desenha a borda."""
+        """@brief Desenha um círculo.
+
+        @param color Cor do traço/preenchimento.
+        @param position Centro em screen_space.
+        @param radius Raio em pixels.
+        @param width `0` preenche; `>0` desenha apenas a borda.
+        """
         pygame.draw.circle(
             self.surface,
             color,
@@ -204,7 +267,13 @@ class Renderer:
         end: Union[tuple[float, float], pygame.Vector2],
         width: int = 1,
     ) -> None:
-        """Desenha uma linha entre `start` e `end`."""
+        """@brief Desenha uma linha entre `start` e `end`.
+
+        @param color Cor da linha.
+        @param start Início em screen_space.
+        @param end Fim em screen_space.
+        @param width Espessura em pixels.
+        """
         pygame.draw.line(
             self.surface,
             color,
@@ -221,7 +290,14 @@ class Renderer:
         width: int = 2,
         head_length: float = 10.0,
     ) -> None:
-        """Desenha uma seta em screen_space."""
+        """@brief Desenha uma seta em screen_space.
+
+        @param color Cor da seta.
+        @param start Origem em screen_space.
+        @param end Ponta em screen_space.
+        @param width Espessura do traço.
+        @param head_length Comprimento da ponta, em pixels.
+        """
         start = pygame.Vector2(start)
         end = pygame.Vector2(end)
 
@@ -233,8 +309,12 @@ class Renderer:
         length = direction.length()
         direction.scale_to_length(1.0)
 
+        # Limita a ponta a metade do comprimento — em setas curtas, uma
+        # ponta do tamanho nominal viraria um triângulo desproporcional.
         head_length = min(head_length, length * 0.5)
 
+        # Os dois vértices da base da ponta: o vetor unitário rotacionado
+        # ±30° a partir da ponta.
         left = end - direction.rotate(30) * head_length
         right = end - direction.rotate(-30) * head_length
 
@@ -262,8 +342,12 @@ class Renderer:
         points: Sequence[Union[tuple[float, float], pygame.Vector2]],
         width: int = 0,
     ) -> None:
-        """Desenha um polígono."""
+        """@brief Desenha um polígono.
 
+        @param color Cor do traço/preenchimento.
+        @param points Vértices em screen_space, na ordem do contorno.
+        @param width `0` preenche; `>0` desenha apenas o contorno.
+        """
         pygame.draw.polygon(
             self.surface,
             color,
@@ -284,7 +368,18 @@ class Renderer:
             closed: bool = False,
             width: int = 1,
     ) -> None:
-        """Desenha uma sequência de segmentos conectados em screen_space."""
+        """@brief Desenha uma sequência de segmentos conectados.
+
+        @details Cada par consecutivo de `points` vira um segmento; se
+        `closed` for `True`, um segmento adicional liga o último ao
+        primeiro vértice.
+
+        @param color Cor dos segmentos.
+        @param points Vértices em screen_space.
+        @param closed Fecha o contorno.
+        @param width Espessura em pixels.
+        """
+        # `pygame.draw.lines` exige pelo menos dois vértices.
         if len(points) < 2:
             return
         pygame.draw.lines(self.surface, color, closed, points, width)

@@ -10,18 +10,18 @@ from src.physics.integrator import (
 
 
 class RK4Integrator(Integrator):
-    """
-    Integrador Runge-Kutta de quarta ordem.
+    """@brief Integrador Runge-Kutta de quarta ordem.
 
-    O estado de cada corpo é:
+    @details Resolve, para cada corpo, o sistema
 
-        posição
-        velocidade
+        dposição/dt   = velocidade
+        dvelocidade/dt = aceleração(posição, velocidade)
 
-    e as derivadas são:
-
-        dposição/dt = velocidade
-        dvelocidade/dt = aceleração
+    em quatro estágios (K1..K4). O estado inicial nunca é mutado
+    até a etapa final: os corpos reais só recebem `position` e
+    `velocity` depois que todos os estágios foram avaliados. Isso
+    permite que `AccelerationModel` seja consultado com estados
+    intermediários sem que o chamador precise reverter nada.
     """
 
     def step(
@@ -30,7 +30,26 @@ class RK4Integrator(Integrator):
         fixed_delta_time: float,
         acceleration_model: AccelerationModel,
     ) -> list[pygame.Vector2]:
+        """@brief Avança um passo RK4 no conjunto de corpos.
 
+        @details Executa os quatro estágios clássicos. Cada estágio
+        consulta `acceleration_model.compute_accelerations` com um
+        estado hipotético montado a partir do estado inicial — os
+        `positions_*` e `velocities_*` são *cópias*, não referências
+        aos corpos reais. No fim, apenas as posições/velocidades
+        finais são copiadas para os `bodies`, e `previous_position`
+        é atualizado para a interpolação de render.
+
+        @param bodies Corpos a integrar; a ordem é preservada no
+            retorno.
+        @param fixed_delta_time Passo fixo `dt`, em segundos.
+        @param acceleration_model Modelo que fornece `a(pos, vel, m)`
+            no estado consultado.
+        @return Lista de acelerações avaliadas no **último estágio**
+            (K4), na mesma ordem de `bodies`. É a aceleração mais
+            próxima do estado final e serve para `last_force`
+            (vetor de força visualizado).
+        """
         count = len(bodies)
 
         if count == 0:
@@ -44,6 +63,9 @@ class RK4Integrator(Integrator):
         # Estado inicial
         # --------------------------------------------------------------
 
+        # Cópias defensivas: `AccelerationModel` pode mutar o que
+        # recebe (composições, filtros), então não expomos os
+        # `Vector2` dos corpos reais aos estágios intermediários.
         positions_0 = [
             pygame.Vector2(body.position)
             for body in bodies
@@ -60,7 +82,7 @@ class RK4Integrator(Integrator):
         ]
 
         # --------------------------------------------------------------
-        # K1
+        # K1 — avaliação no estado inicial
         # --------------------------------------------------------------
 
         accelerations_1 = acceleration_model.compute_accelerations(
@@ -70,9 +92,11 @@ class RK4Integrator(Integrator):
         )
 
         # --------------------------------------------------------------
-        # K2
+        # K2 — meio passo usando apenas K1
         # --------------------------------------------------------------
 
+        # Aqui `velocities_0` (não K1) projeta a posição, e K1 projeta
+        # a velocidade — é a definição do estágio 2.
         positions_1 = [
             positions_0[i] +
             velocities_0[i] * half_dt
@@ -92,9 +116,13 @@ class RK4Integrator(Integrator):
         )
 
         # --------------------------------------------------------------
-        # K3
+        # K3 — meio passo usando K2
         # --------------------------------------------------------------
 
+        # K3 reaproveita a posição inicial + metade de *K2* (não K1),
+        # e a velocidade inicial + metade de K2. Erro comum: usar
+        # `velocities_1` no lugar de `velocities_2` na projeção da
+        # posição — a fórmula abaixo está correta para o estágio 3.
         positions_2 = [
             positions_0[i] +
             velocities_1[i] * half_dt
@@ -114,7 +142,7 @@ class RK4Integrator(Integrator):
         )
 
         # --------------------------------------------------------------
-        # K4
+        # K4 — passo inteiro usando K3
         # --------------------------------------------------------------
 
         positions_3 = [
@@ -136,14 +164,15 @@ class RK4Integrator(Integrator):
         )
 
         # --------------------------------------------------------------
-        # Estado final
+        # Estado final — combinação ponderada (1, 2, 2, 1) / 6
         # --------------------------------------------------------------
 
         positions_final: list[pygame.Vector2] = []
         velocities_final: list[pygame.Vector2] = []
 
         for i in range(count):
-
+            # Posição final combina as *velocidades* dos quatro
+            # estágios, não as acelerações: dpos/dt = vel.
             position = positions_0[i] + (
                 velocities_0[i]
                 + 2.0 * velocities_1[i]
@@ -151,6 +180,8 @@ class RK4Integrator(Integrator):
                 + velocities_3[i]
             ) * sixth_dt
 
+            # Velocidade final combina as *acelerações* dos quatro
+            # estágios: dvel/dt = acel.
             velocity = velocities_0[i] + (
                 accelerations_1[i]
                 + 2.0 * accelerations_2[i]
@@ -165,6 +196,9 @@ class RK4Integrator(Integrator):
         # Copia para os corpos reais
         # --------------------------------------------------------------
 
+        # `.update()` (e não reatribuição) preserva a identidade dos
+        # `Vector2` — importante para o `Rocket` acoplado, que mantém
+        # referências indiretas via `_sync_to_host` e `post_integrate`.
         for i, body in enumerate(bodies):
 
             body.previous_position.update(

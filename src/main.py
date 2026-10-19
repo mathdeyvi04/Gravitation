@@ -30,11 +30,11 @@ from src.physics.composite_acceleration import (
 )
 
 class Gravitation(Application):
-    """Simulação gravitacional de N corpos.
+    """@brief Simulação gravitacional de N corpos.
 
-    A `World` guarda as entidades; esta classe define a ordem do passo
-    físico — gravidade, integração, fusão, purga — e a política de
-    fusão (maior absorve o menor).
+    @details A `World` guarda as entidades; esta classe define a ordem
+    do passo físico — gravidade, integração, fusão, purga — e a
+    política de fusão (maior absorve o menor).
     """
 
     _PLANET_PALETTE = (
@@ -91,6 +91,10 @@ class Gravitation(Application):
 
     @classmethod
     def _random_planet_color(cls) -> tuple[int, int, int]:
+        """@brief Sorteia uma cor da paleta de planetas.
+
+        @return Tupla RGB escolhida aleatoriamente em `_PLANET_PALETTE`.
+        """
         return random.choice(cls._PLANET_PALETTE)
 
     def __init__(
@@ -99,6 +103,17 @@ class Gravitation(Application):
         sim_config: SimulationConfig,
         memory_monitor: MemoryMonitor | None = None,
     ) -> None:
+        """@brief Inicializa a cena, subsistemas e o sistema estelar.
+
+        @details Configura gravidade, integrador, visualizadores e
+        inspector; popula o mundo com `_seed_solar_system`; centraliza
+        a câmera no foguete; e, se fornecido, grava um snapshot inicial
+        no monitor de memória.
+
+        @param config Configuração da janela e do loop.
+        @param sim_config Configuração do mundo e da física.
+        @param memory_monitor Monitor opcional de memória.
+        """
         super().__init__(config)
         self.sim_config = sim_config
         self.world: World[Union[MassObject, Rocket]] = World()
@@ -152,15 +167,12 @@ class Gravitation(Application):
             )
 
     def _register_mass_object_properties(self) -> None:
-        """Registra as propriedades de `MassObject` exibíveis no inspector.
+        """@brief Registra as propriedades de `MassObject` no inspector.
 
-        Define quais campos aparecem na HUD quando um corpo é selecionado,
-        na ordem em que são exibidos. Cada `InspectionProperty` combina um
-        rótulo com um getter (extrai o valor do corpo) e um formatador
-        (converte o valor em string).
-
-        Chamado uma única vez, no `__init__`. Tipos que não são registrados
-        aqui não aparecem no inspector mesmo quando selecionados.
+        @details Define massa, raio, módulo e vetor da velocidade como
+        campos exibíveis, na ordem em que aparecem no painel. Chamado
+        uma única vez no `__init__`; tipos não registrados não aparecem
+        no inspector mesmo quando selecionados.
         """
         self.inspector.register(
             MassObject,
@@ -187,7 +199,13 @@ class Gravitation(Application):
         )
 
     def _register_mass_object_relation_properties(self) -> None:
-        """Registra as propriedades entre dois MassObject."""
+        """@brief Registra as propriedades relacionais entre `MassObject`.
+
+        @details Expõe elementos orbitais relativos (calculados por
+        `RelativeOrbit2D.from_bodies`) e, quando o corpo principal é um
+        `Rocket`, os coeficientes de acoplagem e desacoplagem em
+        relação ao corpo de referência.
+        """
         self.relation_inspector.register(
             MassObject,
             MassObject,
@@ -310,6 +328,10 @@ class Gravitation(Application):
                 lambda value: "—" if value is None else f"{value:+.2f}",
             ),
 
+            # O getter abaixo roda *em cada frame* enquanto o par
+            # (foguete, referência) estiver selecionado e executa a
+            # simulação de subida em `detach_coeficient` — custo
+            # considerável. Ver `DESIGN.md §5`.
             InspectionProperty(
                 f"Desacoplagem",
                 lambda _orbit: (
@@ -325,6 +347,8 @@ class Gravitation(Application):
                 lambda value: "INF" if value is None else f"{value * self.config.fixed_timestep:.2f}s",
             ),
 
+            # Idem para `attach_coeficient`: duas fases (coast + burn)
+            # com limites de passos, custo alto por frame.
             InspectionProperty(
                 "Acoplagem",
                 lambda _orbit: (
@@ -346,17 +370,17 @@ class Gravitation(Application):
         )
 
     def _register_rocket_properties(self) -> None:
-        """Registra propriedades específicas do foguete."""
+        """@brief Registra as propriedades específicas do `Rocket`.
 
+        @details Expõe ângulo, estado de propulsão e fração de
+        combustível restante, com os widgets de orientação e de tanque
+        anexados.
+        """
         self.inspector.register(
             Rocket,
 
             InspectionProperty(
                 "Ângulo",
-                # `rocket.angle` segue a convenção de `atan2(y, x)` em
-                # que Y cresce para baixo (pygame). Invertemos o sinal
-                # na exibição para o referencial usual: bico para cima
-                # vira +90°, bico para a direita fica 0°.
                 lambda rocket: -math.degrees(rocket.angle),
                 lambda value: f"{value:.2f}°",
                 widget=self._draw_rocket_widget,
@@ -390,17 +414,17 @@ class Gravitation(Application):
         renderer,
         rect,
     ) -> None:
-        """Desenha um ícone do foguete orientado pelo ângulo atual.
+        """@brief Desenha o ícone orientado do foguete no inspector.
 
-        O comprimento total do foguete é escalado para caber no lado
-        menor do `rect` com folga. A orientação usa `rocket.angle`
-        diretamente — o mesmo referencial do `Rocket.render`, então o
-        ícone nunca contradiz o que está na cena.
+        @details Escala o foguete para caber em `rect`, desenha os eixos
+        X/Y de referência e projeta o corpo e o bico com a rotação
+        atual. A orientação usa `rocket.angle` diretamente — o mesmo
+        referencial de `Rocket.render` — para o ícone nunca contradizer
+        a cena.
 
-        Duas linhas cruzadas ao centro servem de referencial de
-        direção: a horizontal indica o eixo X (0°), a vertical
-        indica o eixo Y (90° no referencial exibido). São desenhadas
-        antes do foguete, então ficam atrás dele.
+        @param rocket Foguete cuja orientação será exibida.
+        @param renderer Renderizador alvo.
+        @param rect Retângulo onde o widget é desenhado.
         """
         total_length = rocket.body_length + rocket.nose_length
         available = min(rect.width, rect.height) - 8
@@ -439,6 +463,8 @@ class Gravitation(Application):
         half_l = body_l * 0.5
         half_w = body_w * 0.5
 
+        # Transforma coordenadas locais (eixo do foguete) em
+        # screen_space com a rotação atual.
         def transform(lx: float, ly: float) -> tuple[float, float]:
             return (
                 cx + lx * cos_a - ly * sin_a,
@@ -461,12 +487,15 @@ class Gravitation(Application):
         renderer.draw_polygon(rocket.nose_color, nose_points)
 
     def _draw_fuel_widget(self, rocket, renderer, rect) -> None:
-        """Desenha a barra de combustível do foguete.
+        """@brief Desenha a barra de combustível do foguete.
 
-        Barra com borda fixa e preenchimento proporcional à fração
-        restante. A cor muda conforme o tanque esvazia: verde acima de
-        50%, amarelo entre 25% e 50%, vermelho abaixo de 25%. O cinza
-        de fundo é escuro para se destacar do painel do inspector.
+        @details Borda fixa, fundo escuro e preenchimento proporcional
+        à fração restante. A cor muda com o nível: verde acima de 50%,
+        amarelo entre 25% e 50%, vermelho abaixo de 25%.
+
+        @param rocket Foguete cujo tanque será exibido.
+        @param renderer Renderizador alvo.
+        @param rect Retângulo onde o widget é desenhado.
         """
         margin = 4
         bar = pygame.Rect(
@@ -502,19 +531,13 @@ class Gravitation(Application):
     # -- Internos -----------------------------------------------------
 
     def _seed_solar_system(self) -> None:
-        """Gera um sistema estelar com hierarquia de corpos.
+        """@brief Gera o sistema estelar completo.
 
-        Composição:
-        - 1 a 3 estrelas massivas (mutuamente orbitantes se > 1);
-        - 2 a 5 planetas por estrela, em órbitas circulares espaçadas;
-        - 0 a 2 luas por planeta, orbitando o planeta;
-        - 4 a 8 meteoros em órbitas muito excêntricas ao redor de
-          estrelas ou planetas;
-        - 1 foguete acoplado à superfície de um planeta sorteado.
-
-        As massas e raios decrescem por ordens de magnitude entre as
-        classes para que cada corpo seja gravitacionalmente dominado
-        pelo seu hospedeiro.
+        @details Cria estrelas, planetas, luas, meteoros e o foguete
+        acoplado a um planeta sorteado (ou à primeira estrela, se não
+        houver planetas). As massas e raios decrescem por ordens de
+        magnitude entre as classes para que cada corpo seja
+        gravitacionalmente dominado pelo seu hospedeiro.
         """
         cx = self.sim_config.world_width * 0.5
         cy = self.sim_config.world_height * 0.5
@@ -536,12 +559,15 @@ class Gravitation(Application):
         cx: float,
         cy: float,
     ) -> list[MassObject]:
-        """Sorteia 1 a 3 estrelas massivas.
+        """@brief Sorteia e posiciona as estrelas do sistema.
 
-        Com uma única estrela, ela fica em repouso no centro do mundo.
-        Com múltiplas, todas são dispostas em polígono regular ao redor
-        do centro e recebem velocidade tangencial para orbitar o
-        baricentro.
+        @details Com uma única estrela, ela fica em repouso no centro do
+        mundo. Com múltiplas, dispõe-as em polígono regular ao redor do
+        centro e atribui velocidade tangencial para orbitar o baricentro.
+
+        @param cx Coordenada X do centro do mundo.
+        @param cy Coordenada Y do centro do mundo.
+        @return Lista das estrelas criadas.
         """
         G = self.sim_config.gravitational_constant
         count = random.randint(*self._STAR_COUNT_RANGE)
@@ -563,6 +589,9 @@ class Gravitation(Application):
         star_radius = random.uniform(*self._STAR_RADIUS_RANGE)
         total_mass = count * star_mass
 
+        # Velocidade orbital de N corpos iguais num anel de raio
+        # `orbit_radius` ao redor do baricentro (ver problema clássico
+        # do polígono regular).
         speed = math.sqrt(
             G * total_mass / (2.0 * count * orbit_radius)
         )
@@ -596,11 +625,15 @@ class Gravitation(Application):
         self,
         star: MassObject,
     ) -> list[MassObject]:
-        """Sorteia planetas em órbitas circulares ao redor de `star`.
+        """@brief Sorteia planetas em órbitas circulares ao redor de `star`.
 
-        A órbita base está a 2 raios estelares do centro e cada
-        planeta subsequente avança 1 raio estelar, então os planetas
-        ficam claramente separados na nova escala.
+        @details A órbita base fica a `_PLANET_BASE_ORBIT_FACTOR` raios
+        estelares do centro; cada planeta subsequente avança
+        `_PLANET_ORBIT_STEP_FACTOR` raio estelar. Cada planeta pode
+        receber luas via `_spawn_moon`.
+
+        @param star Estrela hospedeira.
+        @return Lista dos planetas criados.
         """
         G = self.sim_config.gravitational_constant
         planet_count = random.randint(*self._PLANET_COUNT_RANGE)
@@ -621,6 +654,8 @@ class Gravitation(Application):
             px = star.position.x + orbit_radius * math.cos(angle)
             py = star.position.y + orbit_radius * math.sin(angle)
 
+            # Órbita circular em torno de `star`, com jitter de ±10%
+            # para não ficar exatamente periódica.
             speed = math.sqrt(G * star.mass / orbit_radius)
             speed *= random.uniform(0.9, 1.1)
 
@@ -645,7 +680,14 @@ class Gravitation(Application):
         return planets
 
     def _spawn_moon(self, planet: MassObject) -> None:
-        """Sorteia uma lua orbitando `planet`."""
+        """@brief Sorteia uma lua orbitando `planet`.
+
+        @details Coloca a lua em órbita circular com raio em
+        `_MOON_ORBIT_FACTOR_RANGE` vezes o raio do planeta e velocidade
+        ajustada por um fator aleatório de 0.9 a 1.1.
+
+        @param planet Planeta hospedeiro.
+        """
         G = self.sim_config.gravitational_constant
 
         orbit_radius = (
@@ -678,15 +720,17 @@ class Gravitation(Application):
         stars: list[MassObject],
         planets: list[MassObject],
     ) -> None:
-        """Sorteia poucos meteoros em órbitas muito excêntricas.
+        """@brief Sorteia meteoros em órbitas muito excêntricas.
 
-        Cada meteoro é colocado no **afélio** de uma órbita com
-        excentricidade entre 0.6 e 0.9 em torno de uma estrela ou
-        planeta sorteado. A velocidade no afélio é perpendicular ao
-        raio e tem módulo `sqrt(G·M/r) · sqrt(1 − e)`, condição exata
-        para que aquele ponto seja o afélio da elipse de excentricidade
-        `e`. O resultado são trajetórias que mergulham no sistema e
-        voltam a se afastar, com dinâmica visualmente interessante.
+        @details Cada meteoro nasce no afélio de uma elipse de
+        excentricidade em `_METEOR_ECCENTRICITY_RANGE`, ao redor de um
+        planeta (60% de chance) ou estrela (40%). A velocidade no
+        afélio é perpendicular ao raio e vale
+        `sqrt(G·M/r) · sqrt(1 − e)` — condição exata para que o ponto
+        seja o afélio da elipse de excentricidade `e`.
+
+        @param stars Estrelas candidatas a hospedeiro.
+        @param planets Planetas candidatos a hospedeiro.
         """
         G = self.sim_config.gravitational_constant
         count = random.randint(*self._METEOR_COUNT_RANGE)
@@ -730,7 +774,15 @@ class Gravitation(Application):
             self.world.add(meteor)
 
     def _spawn_rocket(self, host: MassObject | None) -> None:
-        """Cria o foguete acoplado à superfície de `host`."""
+        """@brief Cria o foguete e o acopla a `host`, se fornecido.
+
+        @details O foguete nasce em repouso na origem; se `host` é
+        fornecido, `dock_to` o reposiciona na superfície do hospedeiro
+        e aplica a colisão inelástica de acoplamento.
+
+        @param host Corpo ao qual o foguete será acoplado; `None`
+        deixa-o livre na origem.
+        """
         angle = random.uniform(0.0, 2.0 * math.pi)
 
         self.rocket = Rocket(
@@ -751,11 +803,19 @@ class Gravitation(Application):
             self.rocket.dock_to(host, angle)
 
     def _resolve_merges(self) -> None:
-        """Funde pares sobrepostos que estejam se aproximando rápido.
+        """@brief Funde pares sobrepostos que estejam se aproximando rápido.
 
-        Pares cuja velocidade relativa é menor que
+        @details Pares cuja velocidade relativa é menor que
         `merge_min_relative_speed` são ignorados — é o que permite o
-        foguete repousar sobre um planeta sem ser absorvido.
+        foguete repousar sobre um planeta sem ser absorvido. O corpo
+        mais massivo absorve o outro via `merge_with`. Quando `b` é
+        maior que `a`, o par é invertido e o laço recomeça a partir
+        do absorvedor (agora em `a`).
+
+        @details A fusão é feita por uma varredura O(N²) em pares
+        ainda ativos. Pares cujo lado já foi absorvido por uma fusão
+        anterior no mesmo passo são ignorados naturalmente por
+        `not b.active` na iteração seguinte.
         """
         bodies = self.world.entities
         n = len(bodies)
@@ -777,6 +837,7 @@ class Gravitation(Application):
                     j += 1
                     continue
 
+                # Aproximação lenta = "contato suave" (pouso), não fusão.
                 relative_speed = (a.velocity - b.velocity).length()
                 if relative_speed < min_speed:
                     j += 1
@@ -786,6 +847,10 @@ class Gravitation(Application):
                     a.merge_with(b)
                 else:
                     b.merge_with(a)
+                    # `a` foi absorvido; o sobrevivente é `b`.
+                    # Reatribuímos para que o laço interno recomece
+                    # a partir dele (o absorvedor pode ter mudado de
+                    # massa/posição e agora colidir com outros).
                     a = b
                 j = i + 1
             i += 1
@@ -793,8 +858,16 @@ class Gravitation(Application):
     # -- Ciclo de vida -------------------------------------------------
 
     def update(self, delta_time: float) -> None:
-        """Lógica de delta variável: quando algo variar no sistema."""
+        """@brief Lógica de delta variável executada uma vez por frame.
 
+        @details Trata, nesta ordem: captura de memória (se habilitada),
+        zoom por scroll, pan da câmera, teclas F/T/V, entrada do
+        foguete (rotação e empuxo), seleção de corpo principal (botão
+        esquerdo), seleção de referência (botão direito) e follow da
+        câmera.
+
+        @param delta_time Tempo desde o último frame, em segundos.
+        """
         if (
                 self.memory_monitor is not None
                 and self.memory_monitor.should_capture()
@@ -839,6 +912,9 @@ class Gravitation(Application):
         if self.input.was_pressed(pygame.K_t):
             self.future_trajectory.toggle()
 
+        # Toggle do "seguir": desliga se estava ligado, liga se estava
+        # desligado E existe algo selecionado. A expressão abaixo
+        # combina os dois casos numa única atribuição booleana.
         if self.input.was_pressed(pygame.K_v):
             self.following = (
                 not self.following
@@ -922,7 +998,16 @@ class Gravitation(Application):
                 self.camera.set_position(target.position)
 
     def fixed_update(self, fixed_delta_time: float) -> None:
-        """Executa um passo físico completo usando RK4."""
+        """@brief Executa um passo físico completo usando RK4.
+
+        @details Sequência: atualiza rotação/combustível, integra com
+        `RK4Integrator`, aplica `post_integrate` em cada corpo
+        (necessário para o foguete acoplado), converte a aceleração do
+        último estágio em força visual (`last_force`), tenta acoplar o
+        foguete, resolve fusões e purga entidades inativas.
+
+        @param fixed_delta_time Passo fixo em segundos.
+        """
         bodies = self.world.entities
 
         # Rotação do foguete e outros no-ops de passo fixo.
@@ -948,11 +1033,13 @@ class Gravitation(Application):
         for body in bodies:
             body.post_integrate()
 
+        # `last_force` é guardado como *força* (a·m), não aceleração,
+        # porque é isso que o `VectorVisualizer` espera receber.
         for body, acceleration in zip(bodies, accelerations):
             body.last_force.update(acceleration)
             body.last_force *= body.mass
 
-        if self.rocket is not None:
+        if self.rocket is not None and self.rocket.active:
             self.rocket.try_land(
                 bodies,
                 self.sim_config.landing_max_speed,
@@ -962,11 +1049,22 @@ class Gravitation(Application):
         self.world.purge_inactive()
 
     def render(self, renderer) -> None:
-        """Desenha a `World` com o alpha de interpolação atual."""
+        """@brief Desenha mundo, seleções, visualizadores e HUD.
+
+        @details Usa `clock.interpolation_alpha` para interpolar a
+        posição entre passos fixos, coerente com o que `Entity.render`
+        desenha. Se um `Rocket` estiver selecionado, sua trajetória é
+        incluída em `focus_entities` mesmo quando a visualização global
+        está desligada.
+
+        @param renderer Renderizador alvo.
+        """
         alpha = self.clock.interpolation_alpha
 
         selected = self.inspector.selected
         reference: AnyGrav = self.relation_inspector.reference
+        # Só rastreamos a trajetória de um foguete selecionado; outros
+        # corpos seguem a flag global `future_trajectory.enabled`.
         trajectory_focus = (
             (selected,)
             if isinstance(
@@ -1119,7 +1217,12 @@ class Gravitation(Application):
         )
 
     def shutdown(self) -> None:
-        """Encerra subsistemas; grava um snapshot final se o monitor existe."""
+        """@brief Encerra subsistemas e grava o snapshot final.
+
+        @details Se o monitor de memória existir e estiver ativo,
+        captura um último snapshot e para o rastreamento. Em seguida
+        delega para `Application.shutdown`.
+        """
         if self.memory_monitor is not None:
             if self.memory_monitor.active:
                 self.memory_monitor.capture(
@@ -1134,6 +1237,12 @@ class Gravitation(Application):
         super().shutdown()
 
 def main() -> None:
+    """@brief Ponto de entrada: parseia argumentos e inicia a aplicação.
+
+    @details Configura a janela e o `SimulationConfig`, instancia o
+    `MemoryMonitor` quando `--monitor-memory` é passado e executa
+    `Gravitation.run`.
+    """
     parser = argparse.ArgumentParser(
         prog="gravitation",
         description=(
