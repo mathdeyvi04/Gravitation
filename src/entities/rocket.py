@@ -1,6 +1,6 @@
 import math
 from typing import Optional, Sequence
-
+import torch
 import pygame
 
 from src.config import SimulationConfig
@@ -49,6 +49,16 @@ class Rocket(MassObject):
     # do foguete, em unidades de mundo. Evita que os círculos de
     # colisão se toquem tangencialmente logo no primeiro frame.
     DOCKING_MARGIN = 2.0
+
+    # Índices de ação definidos em src/ai/DESIGN.md §3.
+    AI_ACTIONS = (
+        (-1, False),  # 0: girar à esquerda, motor desligado
+        (0, False),   # 1: não girar, motor desligado
+        (1, False),   # 2: girar à direita, motor desligado
+        (-1, True),   # 3: girar à esquerda, motor ligado
+        (0, True),    # 4: não girar, motor ligado
+        (1, True),    # 5: girar à direita, motor ligado
+    )
 
     def __init__(
         self,
@@ -247,6 +257,122 @@ class Rocket(MassObject):
 
         self.rotation_input = max(-1, min(1, int(rotation_input)))
         self.thrusting = thrusting
+
+    def set_ai_action(self, action_index: int) -> None:
+        """! @brief Aplica uma das seis ações discretas de `AI_ACTIONS`.
+
+        @details Traduz o índice da política em `(rotation_input, thrusting)`
+        e delega a `set_control`, reutilizando toda a lógica de desacoplamento,
+        consumo de combustível e borda de subida do motor.
+
+        @param action_index Índice inteiro em `[0, len(AI_ACTIONS))`.
+        @throws ValueError Se `action_index` não for um inteiro válido
+            (bool, float, string, fora do range).
+        """
+        # `bool` é subclasse de `int` em Python: `True == 1` passaria na
+        # conversão e na checagem `action != action_index`, mapeando
+        # silenciosamente para a ação 1. Rejeitamos antes de qualquer cast.
+        if isinstance(action_index, bool):
+            raise ValueError("O índice da ação deve ser um inteiro entre 0 e 5.")
+
+        # `int()` cobre strings numéricas, floats, tensores escalares e
+        # objetos com `__int__`; também levanta para NaN, `None` e afins.
+        try:
+            action = int(action_index)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("O índice da ação deve ser um inteiro entre 0 e 5.") from exc
+
+        # Duas checagens em uma:
+        # - `action != action_index` rejeita floats truncados (`3.5 → 3`),
+        #   strings (`"3" → 3`, mas `"3" != 3`) e qualquer objeto cujo
+        #   round-trip `int(x) == x` não seja exato.
+        # - `0 <= action < len(...)` garante índice dentro da tabela.
+        if action != action_index or not 0 <= action < len(self.AI_ACTIONS):
+            raise ValueError("O índice da ação deve ser um inteiro entre 0 e 5.")
+
+        rotation_input, thrusting = self.AI_ACTIONS[action]
+        self.set_control(rotation_input, thrusting)
+
+    def control_with_network(
+        self,
+        network,
+        observation: Sequence[float],
+        deterministic: bool = True,
+    ) -> int:
+        """@brief Consulta uma rede `ActorCritic` e aplica a ação escolhida.
+
+        @details O vetor `observation` segue o `DESIGN.md §5` (9 valores). A
+        construção desse vetor é responsabilidade do ambiente de treino —
+        esta função só valida a forma, encaminha à rede e repassa o índice
+        escolhido para `set_ai_action`.
+
+        @param network Instância com `select_action` e (opcionalmente)
+            `n_actions` e `obs_dim`.
+        @param observation Observação escalar ou em lote de tamanho 1.
+        @param deterministic Se `True`, a política escolhe a ação de maior
+            probabilidade; se `False`, amostra da distribuição.
+        @return Índice inteiro da ação efetivamente aplicada ao foguete.
+        @throws TypeError Se `network` não expõe `select_action`.
+        @throws ValueError Se `network` não puder ser usada (sem `n_actions`,
+            sem parâmetros, forma de observação incompatível, saída ambígua).
+        """
+
+        if not hasattr(network, "select_action"):
+            raise TypeError("A rede deve disponibilizar select_action().")
+
+        # Validação "lenient": se `n_actions` não existe, assume o tamanho
+        # de `AI_ACTIONS`. Isso permite redes duck-typed simples em testes
+        # sem forçar um contrato de atributo. Redes reais devem declarar.
+        if getattr(network, "n_actions", len(self.AI_ACTIONS)) != len(self.AI_ACTIONS):
+            raise ValueError("A rede deve produzir exatamente seis ações.")
+
+        # `next(iter(params()))` resolve o device de forma barata e sem
+        # assumir `nn.Module`. Três falhas possíveis, todas convertidas:
+        # - AttributeError: não tem `.parameters()`;
+        # - StopIteration: `.parameters()` está vazio (rede sem pesos);
+        # - TypeError: `.parameters()` não é iterável.
+        try:
+            device = next(network.parameters()).device
+        except (AttributeError, StopIteration, TypeError) as exc:
+            raise ValueError("A rede precisa ter parâmetros PyTorch.") from exc
+
+        # `as_tensor` só copia se dtype/device divergirem; caso contrário,
+        # compartilha memória com `observation`. Mantemos `float32` porque é
+        # o dtype canônico do `ActorCritic`.
+        observation_tensor = torch.as_tensor(
+            observation, dtype=torch.float32, device=device
+        )
+        # Aceitamos observação 1-D `(obs_dim,)` e adicionamos a dimensão de
+        # lote, pois `select_action` espera `(batch, obs_dim)`.
+        if observation_tensor.ndim == 1:
+            observation_tensor = observation_tensor.unsqueeze(0)
+
+        # Mesma validação "lenient": sem `obs_dim`, a forma passada é o
+        # próprio contrato (útil em smoke tests). Com `obs_dim`, a checagem
+        # de forma é estrita e inclui a dimensão de lote == 1.
+        expected_dim = getattr(network, "obs_dim", observation_tensor.shape[-1])
+        if observation_tensor.shape != (1, expected_dim):
+            raise ValueError(
+                f"Esperada observação com forma ({expected_dim},) ou "
+                f"(1, {expected_dim}); recebida {tuple(observation_tensor.shape)}."
+            )
+
+        # `no_grad`: inferência pura — sem grafo, sem alocação de ativações
+        # intermediárias. A tupla devolvida é `(ações, log_prob, valor)`.
+        with torch.no_grad():
+            actions, _log_prob, _value = network.select_action(
+                observation_tensor, deterministic=deterministic
+            )
+        # Defensivo: se a rede devolver um lote (ex.: `deterministic=False`
+        # amostrando múltiplas vezes), abortamos em vez de escolher `[0]`
+        # silenciosamente — o chamador perceberá o contrato violado.
+        if actions.numel() != 1:
+            raise ValueError("control_with_network espera uma única observação por chamada.")
+
+        # `.item()` extrai o escalar Python do tensor (device-agnóstico).
+        action = int(actions.item())
+        self.set_ai_action(action)
+        return action
 
     def try_land(
         self,

@@ -145,6 +145,12 @@ class Gravitation(Application):
         self._register_mass_object_relation_properties()
         self._register_rocket_properties()
 
+        # --- Controle (jogador x rede)
+        self.ai_controlled = False
+        # Podemos carregar agora ou não
+        self.rocket_network = None  # ActorCritic ou None
+        self.rocket_host = None  # corpo de referência p/ observação
+
         # Iniciamos o sistema
         self._seed_solar_system()
 
@@ -807,6 +813,7 @@ class Gravitation(Application):
             nose_color=(240, 110, 80),
         )
         self.world.add(self.rocket)
+        self.rocket_host = host
         if host is not None:
             self.rocket.dock_to(host, angle)
 
@@ -862,6 +869,71 @@ class Gravitation(Application):
                     a = b
                 j = i + 1
             i += 1
+
+    def _build_observation(self) -> Optional[list[float]]:
+        """Vetor de observação de 9 floats conforme DESIGN.md §5.
+
+        Devolve None quando o foguete ou o host não estão disponíveis/ativos.
+        """
+        rocket = self.rocket
+        host = self.rocket_host
+        if rocket is None or host is None:
+            return None
+        if not rocket.active or not host.active:
+            return None
+
+        G = self.sim_config.gravitational_constant
+        mu = G * (host.mass + rocket.mass)
+        if mu <= 0.0:
+            return None
+
+        alpha = float(rocket.alpha)
+        if alpha <= 0.0:
+            return None
+        r_ref = alpha * host.radius
+        if r_ref <= 0.0:
+            return None
+
+        v_ref = math.sqrt(mu / r_ref)
+        a_g_ref = mu / (r_ref * r_ref)
+        omega_ref = v_ref / r_ref
+
+        # Estado orbital relativo foguete -> host.
+        orbit = RelativeOrbit2D.from_bodies(rocket, host, G)
+
+        # Base radial local (do host para o foguete).
+        rp = rocket.position - host.position
+        r = rp.length()
+        if r <= 1e-12:
+            return None
+        radial_hat = rp / r
+
+        # Ângulo bico-radial: seno/cosseno via produto vetorial / escalar.
+        nose = rocket.forward  # (cos a, sin a)
+        cos_rel = max(-1.0, min(1.0, nose.dot(radial_hat)))
+        sin_rel = radial_hat.x * nose.y - radial_hat.y * nose.x
+
+        r_norm = r / r_ref
+        vr_norm = orbit.radial_velocity / v_ref
+        vt_norm = orbit.tangential_velocity / v_ref
+
+        docked = 1.0 if rocket.docked_to is not None else 0.0
+        fuel_frac = (rocket.fuel / rocket.fuel_max
+                     if rocket.fuel_max > 0.0 else 0.0)
+
+        # Autoridade de controle em log10, saturada em [-1, 2] como no DESIGN.
+        thrust_ratio = rocket.thrust_acceleration / a_g_ref if a_g_ref > 0.0 else 1.0
+        rot_ratio = rocket.rotation_speed / omega_ref if omega_ref > 0.0 else 1.0
+
+        log_thrust = max(-1.0, min(2.0, math.log10(max(thrust_ratio, 1e-6))))
+        log_rot = max(-1.0, min(2.0, math.log10(max(rot_ratio, 1e-6))))
+
+        return [
+            r_norm, vr_norm, vt_norm,
+            sin_rel, cos_rel,
+            docked, fuel_frac,
+            log_thrust, log_rot,
+        ]
 
     # -- Ciclo de vida -------------------------------------------------
 
@@ -929,6 +1001,14 @@ class Gravitation(Application):
                 and self.inspector.selected is not None
             )
 
+        # Controle da IA
+        if self.input.was_pressed(pygame.K_i):
+            if self.rocket_network is None:
+                print("[AI] nenhuma rede carregada — controle do jogador mantido "
+                      "(use --model CAMINHO para carregar).")
+            else:
+                self.ai_controlled = not self.ai_controlled
+
         if self.input.was_pressed(pygame.K_UP):
             if self.rocket is not None:
                 self.rocket.alpha = min(Gravitation.MAX_ALPHA, self.rocket.alpha + 0.25)
@@ -940,6 +1020,7 @@ class Gravitation(Application):
         if (
             self.rocket is not None
             and self.rocket.active
+            and not self.ai_controlled
         ):
             rotation_input = (
                 int(
@@ -1024,6 +1105,25 @@ class Gravitation(Application):
 
         @param fixed_delta_time Passo fixo em segundos.
         """
+
+        if (
+            self.ai_controlled
+            and self.rocket_network is not None
+            and self.rocket is not None
+            and self.rocket.active
+        ):
+            obs = self._build_observation()
+            if obs is not None:
+                try:
+                    self.rocket.control_with_network(
+                        self.rocket_network,
+                        obs,
+                        deterministic=True,  # avaliação: argmax
+                    )
+                except Exception as exc:
+                    print(f"Falha ao consultar a rede")
+                    self.ai_controlled = False
+
         bodies = self.world.entities
 
         # Rotação do foguete e outros no-ops de passo fixo.
@@ -1181,6 +1281,16 @@ class Gravitation(Application):
             renderer,
             self.inspector,
             self.relation_inspector,
+        )
+
+        control_label = "REDE NEURAL" if self.ai_controlled else "JOGADOR"
+        control_color = (120, 220, 255) if self.ai_controlled else (255, 255, 255)
+
+        renderer.draw_text(
+            f"Controle do foguete: {control_label}  (pressione I para alternar)",
+            (5, self.config.height - 115),
+            size=25,
+            color=control_color,
         )
 
         force_action = (
