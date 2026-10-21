@@ -12,6 +12,7 @@ from src.engine.application import Application
 from src.engine.world import World
 from src.entities.massobject import MassObject
 from src.entities.rocket import Rocket
+from src.entities.entity_picker import EntityPicker
 from src.physics.collision import collides
 from src.physics.composite_acceleration import CompositeAccelerationModel
 from src.physics.gravity import NewtonianGravity
@@ -45,16 +46,16 @@ class Experimenter(Application):
     _HOST_RADIUS_RANGE = (500.0, 540.0)
     _ALPHA_RANGE = (1.5, 5.0)
 
-    _C_THRUST = 0.02
+    _C_THRUST = 0.005
     _C_ROTATE = 0.003
-    _C_TIME = 0.001
+    _C_TIME = 0.0002
     _TERMINAL_SUCCESS = 100.0
     _TERMINAL_COLLISION = -100.0
     _TERMINAL_ESCAPE = -50.0
     _TERMINAL_REDOCKED = -5.0
     _TERMINAL_FUEL = -20.0
     _TERMINAL_TIMEOUT = -5.0
-    _MAX_STEPS = 3600
+    _MAX_STEPS = 1800
     _STABLE_R_BAND = 0.12
     _STABLE_V_BAND = 0.20
     _ESCAPE_FACTOR = 8.0
@@ -132,6 +133,11 @@ class Experimenter(Application):
         self.episode_step: int = 0
         self._batch_obs: list[list[float]] = []
 
+        self.entity_picker = EntityPicker()
+        self.selected_rocket: Optional[Rocket] = None
+        self._selected_rocket_idx: Optional[int] = None
+        self._selected_obs: list[float] = [0.0] * 9
+
     def experiment_single_host(
         self,
         population: Optional[NeuralPopulation] = None,
@@ -166,6 +172,9 @@ class Experimenter(Application):
         self.networks = []
         self.rocket_host = None
         self.population = population
+
+        self.selected_rocket = None
+        self._selected_rocket_idx = None
 
         if host_mass is None:
             host_mass = random.uniform(*self._HOST_MASS_RANGE)
@@ -378,6 +387,7 @@ class Experimenter(Application):
         rp_x = rocket.position.x - host.position.x
         rp_y = rocket.position.y - host.position.y
         r = math.sqrt(rp_x * rp_x + rp_y * rp_y)
+        self.max_r[i] = max(self.max_r[i], r)
         if r <= 1e-12:
             return 0.0, 0.0, 0.0, 0.0, 0.0
 
@@ -397,7 +407,7 @@ class Experimenter(Application):
             e_raio = min(abs(r / r_ref - 1.0), self._POTENTIAL_CAP)
             e_radial = min(abs(v_r) / v_ref, self._POTENTIAL_CAP)
             e_tang = min(abs(abs(v_t) - v_ref) / v_ref, self._POTENTIAL_CAP)
-            phi = -(2.0 * e_raio + 0.75 * e_radial + 0.75 * e_tang)
+            phi = - 5.0 * (2.0 * e_raio + 0.75 * e_radial + 0.75 * e_tang)
         else:
             phi = 0.0
 
@@ -472,6 +482,8 @@ class Experimenter(Application):
 
         if in_band and abs(self.theta_accum[i]) >= 2.0 * math.pi:
             terminal, reason = self._TERMINAL_SUCCESS, "success"
+        elif in_band and abs(self.theta_accum[i]) >= math.pi:
+            terminal, reason = 50.0, "half_orbit"
         elif (
                 self.ever_undocked[i]
                 and collides(host, rocket)
@@ -479,6 +491,11 @@ class Experimenter(Application):
                 >= self.sim_config.merge_min_relative_speed
         ):
             terminal, reason = self._TERMINAL_COLLISION, "collision"
+        elif self.ever_undocked[i] and rocket.docked_to is not None:
+            if self.max_r[i] < 1.2 * host.radius:
+                terminal, reason = self._TERMINAL_TIMEOUT, "never_launched"
+            else:
+                terminal, reason = self._TERMINAL_REDOCKED, "redocked"
         elif r > self._ESCAPE_FACTOR * host.radius:
             terminal, reason = self._TERMINAL_ESCAPE, "escape"
         elif self.ever_undocked[i] and rocket.docked_to is not None:
@@ -487,7 +504,6 @@ class Experimenter(Application):
             terminal, reason = self._TERMINAL_FUEL, "fuel_exhausted"
         elif self.steps[i] >= self._MAX_STEPS:
             terminal, reason = self._TERMINAL_TIMEOUT, "timeout"
-
         if terminal is not None:
             self.rewards[i] += terminal
             self.alive[i] = False
@@ -514,6 +530,7 @@ class Experimenter(Application):
         self._r_ref = [0.0] * n
         self._v_ref = [1.0] * n
         self._batch_obs = [[0.0] * 9 for _ in range(n)]
+        self.max_r = [0.0] * n
 
         host = self.rocket_host
         if host is None:
@@ -653,6 +670,26 @@ class Experimenter(Application):
                 1.1 ** self.input.mouse_wheel,
             )
 
+        if self.input.was_mouse_button_clicked(pygame.BUTTON_LEFT):
+            pick_alpha = min(1.0, self.clock.interpolation_alpha)
+            picked = self.entity_picker.pick(
+                self.input.mouse_position,
+                self.camera,
+                self.world.entities,
+                alpha=pick_alpha,
+            )
+            if isinstance(picked, Rocket):
+                self.selected_rocket = picked
+                try:
+                    self._selected_rocket_idx = self.rockets.index(picked)
+                except ValueError:
+                    # Foguete válido, mas não rastreado (defensivo).
+                    self.selected_rocket = None
+                    self._selected_rocket_idx = None
+            else:
+                self.selected_rocket = None
+                self._selected_rocket_idx = None
+
         if self.input.is_mouse_button_down(pygame.BUTTON_LEFT):
             self.camera.move(
                 -self.input.mouse_delta / self.camera.zoom
@@ -739,12 +776,67 @@ class Experimenter(Application):
         self._resolve_merges()
         self.world.purge_inactive()
 
+    def _draw_observation_labels(
+        self,
+        renderer,
+        rocket: Rocket,
+        obs: list[float],
+        idx: int,
+    ) -> None:
+        """@brief Desenha o vetor de observação no canto superior direito.
+
+        @details `anchor="topright"` alinha a borda direita de cada linha
+        em `x`, independentemente do comprimento do texto — sem precisar
+        medir cada label. Valores vêm do buffer `_selected_obs`, então
+        nenhuma lista é alocada por frame.
+        """
+        x = self.config.width - 10
+        y = 10
+        line_height = 22
+
+        renderer.draw_text(
+            f"Foguete #{idx}",
+            (x, y),
+            size=24,
+            color=(255, 255, 255),
+            anchor="topright",
+        )
+        y += 30
+
+        labels = (
+            ("ALPHA", f"{rocket.alpha:.3f}"),
+            ("r/r_ref", f"{obs[0]:+.3f}"),
+            ("v_r/v_ref", f"{obs[1]:+.3f}"),
+            ("v_t/v_ref", f"{obs[2]:+.3f}"),
+            ("sin(θ_rel)", f"{obs[3]:+.3f}"),
+            ("cos(θ_rel)", f"{obs[4]:+.3f}"),
+            ("docked", "sim" if obs[5] > 0.5 else "não"),
+            ("fuel/fuel_max", f"{obs[6]:.3f}"),
+            ("log10(a_t/a_g)", f"{obs[7]:+.3f}"),
+            ("log10(ω/ω_ref)", f"{obs[8]:+.3f}"),
+        )
+        for label, value in labels:
+            renderer.draw_text(
+                f"{label}: {value}",
+                (x, y),
+                size=20,
+                color=(220, 240, 255),
+                anchor="topright",
+            )
+            y += line_height
+
     def render(self, renderer) -> None:
-        """@brief Desenha o mundo e o HUD (geração e vivos).
+        """@brief Desenha o mundo, a seleção e o HUD (geração/vivos/obs).
 
         @param renderer Renderizador alvo.
         """
         alpha = self.clock.interpolation_alpha
+
+        if self.selected_rocket is not None and self.selected_rocket.active:
+            self.selected_rocket.render_selection(
+                renderer, self.camera, alpha,
+            )
+
         self.world.render(renderer, self.camera, alpha)
 
         n_alive = sum(self.alive) if self.alive else 0
@@ -763,6 +855,29 @@ class Experimenter(Application):
             color=(180, 220, 255),
         )
 
+        rocket = self.selected_rocket
+        if rocket is None or not rocket.active:
+            if rocket is not None:
+                self.selected_rocket = None
+                self._selected_rocket_idx = None
+            return
+
+        host = self.rocket_host
+        if host is None or not host.active:
+            return
+
+        idx = self._selected_rocket_idx
+        if idx is None:
+            return
+
+        # Buffer reutilizado: `out=self._selected_obs` evita alocar
+        # uma lista nova a cada frame.
+        obs = self._build_observation_for(rocket, host, out=self._selected_obs)
+        if obs is None:
+            return
+
+        self._draw_observation_labels(renderer, rocket, obs, idx)
+
 
 def main() -> None:
     """@brief Ponto de entrada: monta a geração 0 e roda o treino."""
@@ -779,11 +894,11 @@ def main() -> None:
 
     app = Experimenter(
         config, sim_config,
-        max_generations=50,
+        max_generations=150,
         method="sexual",
-        elite_count=1,
-        mutation_rate=0.05,
-        mutation_std=0.02,
+        elite_count=5,
+        mutation_rate=0.10,
+        mutation_std=0.03,
         base_seed=42,
     )
     app.experiment_single_host(population)
