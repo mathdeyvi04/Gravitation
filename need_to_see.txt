@@ -1,7 +1,0 @@
-- Colocar uma mini rede representando o melhor foguete ou o que foi clicado
-
-- Tentar colocar um gráfico algo assim para averiguarmos como a rede está a evoluir
-
-- Tentar entender o que é Forward Batch
-
-- Tentar aplicar Multithreading

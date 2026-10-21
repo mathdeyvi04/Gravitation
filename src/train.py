@@ -1,7 +1,9 @@
 import argparse
+import json
 import math
 import random
 from pathlib import Path
+from time import perf_counter
 from typing import Optional
 
 import torch
@@ -25,11 +27,10 @@ from src.physics.isolated_host_gravity import IsolatedHostGravity
 class Experimenter(Application):
     """@brief Simulação enxuta: um host + N foguetes, um por rede.
 
-    @details Física isolada (`IsolatedHostGravity`): foguetes sentem
-    apenas o host, sem interação entre si. Cada rede decide o próprio
-    foguete a cada passo físico; recompensa segue DESIGN §6-7. Cada
-    geração sorteia host, α e ângulo — o GA nunca vê o mesmo cenário
-    duas vezes.
+    @details Física isolada (foguetes sentem apenas o host). Cada
+    geração sorteia host, α e ângulo; a rede decide a ação de cada
+    foguete a cada passo físico. Métricas são anexadas em
+    `training_log.jsonl` ao fim da geração.
     """
 
     _INITIAL_ZOOM = 0.1
@@ -44,22 +45,27 @@ class Experimenter(Application):
 
     _HOST_MASS_RANGE = (400_000.0, 700_000.0)
     _HOST_RADIUS_RANGE = (500.0, 540.0)
-    _ALPHA_RANGE = (1.5, 5.0)
+    _ALPHA_RANGE = (1.5, 3.0)
 
-    _C_THRUST = 0.005
-    _C_ROTATE = 0.003
-    _C_TIME = 0.0002
-    _TERMINAL_SUCCESS = 100.0
-    _TERMINAL_COLLISION = -100.0
-    _TERMINAL_ESCAPE = -50.0
-    _TERMINAL_REDOCKED = -5.0
-    _TERMINAL_FUEL = -20.0
-    _TERMINAL_TIMEOUT = -5.0
-    _MAX_STEPS = 1800
-    _STABLE_R_BAND = 0.12
-    _STABLE_V_BAND = 0.20
-    _ESCAPE_FACTOR = 8.0
-    _POTENTIAL_CAP = 4.0
+    # --- Custos densos e recompensas ---------------------------------
+    _C_THRUST = 0.005                # Custo por passo com motor ativo.
+    _C_ROTATE = 0.003                # Custo por passo com rotação ativa.
+    _C_TIME = 0.0002                 # Custo por passo decorrido (tempo).
+    _C_IN_BAND = 0.02                # Recompensa por passo em banda estável.
+    _TERMINAL_SUCCESS = 100.0        # Bônus terminal ao completar 2π em banda.
+    _BONUS_HALF_ORBIT = 50.0         # Bônus único ao cruzar π em banda (não-terminal).
+    _TERMINAL_COLLISION = -100.0     # Penalidade terminal por colisão destrutiva.
+    _TERMINAL_ESCAPE = -50.0         # Penalidade terminal ao ultrapassar 8·R_host.
+    _TERMINAL_REDOCKED = -5.0        # Penalidade terminal por reacoplar após decolar.
+    _TERMINAL_FUEL = -20.0           # Penalidade terminal por combustível esgotado.
+    _TERMINAL_TIMEOUT = -5.0         # Penalidade terminal ao esgotar passos.
+
+    # --- Geometria e física ------------------------------------------
+    _TIMEOUT_ORBITS = 2.0            # Timeout = este nº × período orbital no r_ref.
+    _STABLE_R_BAND = 0.05            # Tolerância relativa em r/r_ref para "em banda".
+    _STABLE_V_BAND = 0.10            # Tolerância relativa em v_r/v_ref e v_t/v_ref.
+    _ESCAPE_FACTOR = 8.0             # Múltiplo de R_host que caracteriza fuga.
+    _POTENTIAL_CAP = 4.0             # Teto de cada termo de erro no Φ (anti-explosão).
 
     def __init__(
         self,
@@ -73,10 +79,9 @@ class Experimenter(Application):
         base_seed: int = 42,
         output_dir: Optional[Path] = None,
     ) -> None:
-        """@brief Configura o ambiente e os parâmetros do GA.
+        """@brief Configura o ambiente e o GA; não popula o mundo.
 
-        @details Não popula o mundo — chame `experiment_single_host`
-        antes de `run()`.
+        @details Chame `experiment_single_host` antes de `run()`.
 
         @param config Janela e loop principal.
         @param sim_config Física (G, softening, etc.).
@@ -85,8 +90,8 @@ class Experimenter(Application):
         @param elite_count Quantos melhores ficam intactos.
         @param mutation_rate Probabilidade de mutar cada peso.
         @param mutation_std Desvio-padrão do ruído gaussiano.
-        @param base_seed Semente mestra (reprodutibilidade).
-        @param output_dir Diretório do checkpoint do campeão.
+        @param base_seed Semente mestra.
+        @param output_dir Diretório do checkpoint e do log.
         """
         super().__init__(config)
         self.sim_config = sim_config
@@ -121,6 +126,10 @@ class Experimenter(Application):
         self.max_generations: int = max_generations
         self.training_done: bool = False
         self.history: list[list[float]] = []
+        self._best_ever: float = -math.inf
+        self._best_ever_gen: int = -1
+        self._best_ever_state: Optional[dict] = None
+        self._shutdown_done: bool = False
 
         self.method = method
         self.elite_count = elite_count
@@ -128,8 +137,11 @@ class Experimenter(Application):
         self.mutation_std = mutation_std
         self.base_seed = base_seed
         self.output_dir = output_dir or Path("checkpoints")
+        self.log_path: Path = self.output_dir / "training_log.jsonl"
+        self._gen_start_time: float = 0.0
 
-        self._EPISODE_MAX_STEPS = self._MAX_STEPS
+        self._current_alpha: float = 0.0
+        self._EPISODE_MAX_STEPS: int = 0
         self.episode_step: int = 0
         self._batch_obs: list[list[float]] = []
 
@@ -149,21 +161,19 @@ class Experimenter(Application):
         host_position: Optional[pygame.Vector2] = None,
         host_velocity: Optional[pygame.Vector2] = None,
     ) -> None:
-        """@brief Monta o experimento: 1 host e N foguetes.
+        """@brief Monta o experimento: 1 host e N foguetes (1 por rede).
 
-        @details Se `population` é None, cria 1 foguete sem rede (para
-        inspeção). Caso contrário, cria `len(population)` foguetes em
-        ângulos equidistantes, um por rede. Parâmetros `None` são
-        sorteados — chamar sem argumentos gera um cenário totalmente
-        novo, útil na geração 0.
+        @details Sem `population`, cria 1 foguete sem rede (inspeção).
+        Com `population`, cria N foguetes em ângulos equidistantes. Os
+        parâmetros `None` são sorteados — chamar sem argumentos gera um
+        cenário novo.
 
-        @param population Redes a controlar (ou None para 1 foguete).
+        @param population Redes a controlar, ou None para 1 foguete.
         @param host_mass Massa do host; sorteada se None.
         @param host_radius Raio do host; sorteado se None.
         @param host_color Cor do host.
         @param rocket_alpha α do alvo orbital; sorteado se None.
-        @param docking_base_angle Ângulo base de acoplagem; sorteado
-            se None.
+        @param docking_base_angle Ângulo base de acoplagem; sorteado se None.
         @param host_position Posição do host; centro do mundo se None.
         @param host_velocity Velocidade do host; zero se None.
         """
@@ -206,18 +216,18 @@ class Experimenter(Application):
         else:
             n = len(population)
             for i in range(n):
-                # Ângulos equidistantes: rede i controla o foguete i.
                 angle = docking_base_angle + 2.0 * math.pi * i / n
                 self._spawn_rocket(host, angle, rocket_alpha)
             self.networks = list(population)
 
+        self._current_alpha = float(rocket_alpha)
         self.gravity = IsolatedHostGravity(
             gravitational_constant=self.sim_config.gravitational_constant,
             softening=self.sim_config.gravitational_softening,
             host_index=0,
         )
         self.camera.set_position(host.position)
-
+        self._gen_start_time = perf_counter()
         self._init_reward_tracking()
 
     def _spawn_host(
@@ -259,7 +269,7 @@ class Experimenter(Application):
 
         @param host Corpo ao qual acoplar; None deixa livre.
         @param angle Ângulo radial de acoplagem (ou orientação inicial).
-        @param alpha α do alvo orbital do foguete.
+        @param alpha α do alvo orbital.
         @return O foguete criado.
         """
         rocket = Rocket(
@@ -286,17 +296,16 @@ class Experimenter(Application):
             self, rocket: Rocket, host: MassObject,
             out: Optional[list[float]] = None,
     ) -> Optional[list[float]]:
-        """@brief Vetor de 9 floats do DESIGN §5 para (rocket, host).
+        """@brief Vetor de 9 floats do DESIGN §5.
 
-        @details Escreve em `out` quando fornecido (reaproveitamento);
-        caso contrário, aloca uma lista nova. Devolve None quando a
-        observação é indefinida (corpos inativos, distância nula,
-        parâmetros degenerados).
+        @details Escreve em `out` quando fornecido; senão aloca. Devolve
+        None em estados degenerados (corpos inativos, r≈0, parâmetros
+        inválidos).
 
         @param rocket Foguete observado.
         @param host Corpo de referência.
-        @param out Buffer reutilizável de tamanho ≥ 9; criado se None.
-        @return O vetor preenchido, ou None.
+        @param out Buffer reutilizável de tamanho ≥ 9.
+        @return Vetor preenchido, ou None.
         """
         if out is None:
             out = [0.0] * 9
@@ -331,7 +340,6 @@ class Experimenter(Application):
         h = rp_x * rv_y - rp_y * rv_x
         v_t = h / r
 
-        # cos/sin do ângulo bico-radial via projeções sobre r̂.
         nx = math.cos(rocket.angle)
         ny = math.sin(rocket.angle)
         cos_rel = (nx * rp_x + ny * rp_y) / r
@@ -371,13 +379,12 @@ class Experimenter(Application):
     def _rocket_kinematics(
             self, i: int
     ) -> tuple[float, float, float, float, float]:
-        """@brief Cinemática relativa e potencial Φ de um foguete.
+        """@brief Cinemática relativa e potencial Φ do foguete `i`.
 
-        @details Devolve `(r, v_r, v_t, angle, phi)` numa única
-        passada usando só floats — sem `Vector2` temporário.
+        @details Usa só floats; atualiza `self.max_r[i]` de passagem.
 
         @param i Índice em `self.rockets`.
-        @return `(distância, v_radial, v_tangencial, ângulo, Φ)`.
+        @return `(r, v_r, v_t, ângulo, Φ)`.
         """
         rocket = self.rockets[i]
         host = self.rocket_host
@@ -396,7 +403,6 @@ class Experimenter(Application):
         rvx = rocket.velocity.x - host.velocity.x
         rvy = rocket.velocity.y - host.velocity.y
         v_r = rvx * rx + rvy * ry
-        # Momento angular h = r × v; v_t = h/r, assinada pelo sentido.
         h = rp_x * rvy - rp_y * rvx
         v_t = h / r
         angle = math.atan2(rp_y, rp_x)
@@ -407,26 +413,25 @@ class Experimenter(Application):
             e_raio = min(abs(r / r_ref - 1.0), self._POTENTIAL_CAP)
             e_radial = min(abs(v_r) / v_ref, self._POTENTIAL_CAP)
             e_tang = min(abs(abs(v_t) - v_ref) / v_ref, self._POTENTIAL_CAP)
-            phi = - 5.0 * (2.0 * e_raio + 0.75 * e_radial + 0.75 * e_tang)
+            phi = -5.0 * (2.0 * e_raio + 0.75 * e_radial + 0.75 * e_tang)
         else:
             phi = 0.0
 
         return r, v_r, v_t, angle, phi
 
     def _update_rewards(self, host: MassObject) -> None:
-        """@brief Atualiza a recompensa de todos os foguetes vivos.
+        """@brief Atualiza recompensa de todos os foguetes vivos.
 
-        @details Roda após `try_land` (detecta re-acoplagem) e antes
-        de `_resolve_merges` (detecta colisão antes da absorção).
+        @details Roda após `try_land` e antes de `_resolve_merges`.
+        Foguetes absorvidos por fusão são marcados mortos.
 
-        @param host Corpo hospedeiro atual.
+        @param host Corpo hospedeiro.
         """
         for i in range(len(self.rockets)):
             if not self.alive[i]:
                 continue
             rocket = self.rockets[i]
             if not rocket.active:
-                # Absorvido por `_resolve_merges` em passo anterior.
                 self.alive[i] = False
                 continue
             self._update_reward_for(i, rocket, host)
@@ -434,10 +439,11 @@ class Experimenter(Application):
     def _update_reward_for(
             self, i: int, rocket: Rocket, host: MassObject
     ) -> None:
-        """@brief Recompensa e terminais de um foguete (DESIGN §6-7).
+        """@brief Recompensa e terminais do foguete `i`.
 
         @details Ordem dos terminais: sucesso → colisão → fuga →
-        re-acoplagem → combustível → timeout.
+        reacoplagem → combustível → timeout. Bônus de meia-órbita é
+        não-terminal, disparado uma única vez.
 
         @param i Índice em `self.rockets`.
         @param rocket Foguete avaliado.
@@ -447,7 +453,6 @@ class Experimenter(Application):
         r_ref = self._r_ref[i]
         v_ref = self._v_ref[i]
 
-        # Shaping telescopa: ΣΦ(s') − ΣΦ(s) = Φ(final) − Φ(inicial).
         shaping = new_phi - self.prev_phi[i]
         self.prev_phi[i] = new_phi
 
@@ -463,17 +468,24 @@ class Experimenter(Application):
                 and abs(abs(v_t) - v_ref) / v_ref < self._STABLE_V_BAND
         )
 
-        # Progresso angular zera fora da faixa, impedindo "colar" na órbita.
+        if in_band:
+            self.rewards[i] += self._C_IN_BAND
+            self.in_band_steps[i] += 1
+            if (
+                    not self.half_orbit_awarded[i]
+                    and abs(self.theta_accum[i]) >= math.pi
+            ):
+                self.half_orbit_awarded[i] = True
+                self.rewards[i] += self._BONUS_HALF_ORBIT
+
         if in_band:
             delta = angle - self.prev_angle[i]
-            # Normaliza Δθ para (-π, π] antes de acumular.
             delta = (delta + math.pi) % (2.0 * math.pi) - math.pi
             self.theta_accum[i] += delta
         else:
             self.theta_accum[i] = 0.0
         self.prev_angle[i] = angle
 
-        # Só considera "re-acoplagem" quem já desacoplou ao menos 1×.
         if rocket.docked_to is None:
             self.ever_undocked[i] = True
 
@@ -482,8 +494,6 @@ class Experimenter(Application):
 
         if in_band and abs(self.theta_accum[i]) >= 2.0 * math.pi:
             terminal, reason = self._TERMINAL_SUCCESS, "success"
-        elif in_band and abs(self.theta_accum[i]) >= math.pi:
-            terminal, reason = 50.0, "half_orbit"
         elif (
                 self.ever_undocked[i]
                 and collides(host, rocket)
@@ -498,12 +508,11 @@ class Experimenter(Application):
                 terminal, reason = self._TERMINAL_REDOCKED, "redocked"
         elif r > self._ESCAPE_FACTOR * host.radius:
             terminal, reason = self._TERMINAL_ESCAPE, "escape"
-        elif self.ever_undocked[i] and rocket.docked_to is not None:
-            terminal, reason = self._TERMINAL_REDOCKED, "redocked"
         elif rocket.fuel <= 0.0:
             terminal, reason = self._TERMINAL_FUEL, "fuel_exhausted"
-        elif self.steps[i] >= self._MAX_STEPS:
+        elif self.steps[i] >= self._EPISODE_MAX_STEPS:
             terminal, reason = self._TERMINAL_TIMEOUT, "timeout"
+
         if terminal is not None:
             self.rewards[i] += terminal
             self.alive[i] = False
@@ -512,10 +521,9 @@ class Experimenter(Application):
     def _init_reward_tracking(self) -> None:
         """@brief Zera buffers e pré-computa constantes por foguete.
 
-        @details `r_ref` e `v_ref` são fixos durante o experimento
-        (α e raio do host não mudam) — evita `sqrt` por passo.
-        `prev_phi` recebe Φ(s₀) para que o shaping do primeiro passo
-        seja exato.
+        @details `r_ref`, `v_ref` e `_EPISODE_MAX_STEPS` são fixos na
+        geração. `prev_phi` e `prev_angle` recebem o estado inicial
+        para que o shaping do primeiro passo seja exato.
         """
         n = len(self.rockets)
         self.episode_step = 0
@@ -531,6 +539,8 @@ class Experimenter(Application):
         self._v_ref = [1.0] * n
         self._batch_obs = [[0.0] * 9 for _ in range(n)]
         self.max_r = [0.0] * n
+        self.half_orbit_awarded = [False] * n
+        self.in_band_steps = [0] * n
 
         host = self.rocket_host
         if host is None:
@@ -548,17 +558,26 @@ class Experimenter(Application):
             self.prev_phi[i] = phi
             self.prev_angle[i] = angle
 
+        if self._r_ref and self._r_ref[0] > 0.0:
+            r_ref = self._r_ref[0]
+            mu = G * (host.mass + self.rockets[0].mass)
+            T_orbit = 2.0 * math.pi * math.sqrt(r_ref ** 3 / mu)
+            self._EPISODE_MAX_STEPS = max(
+                1, int(self._TIMEOUT_ORBITS * T_orbit / self.config.fixed_timestep)
+            )
+        else:
+            self._EPISODE_MAX_STEPS = 100_000
+
     @staticmethod
     def load_network(path: Path):
-        """@brief Carrega um `ActorCritic` de um checkpoint `.pt`.
+        """@brief Carrega `ActorCritic` de um checkpoint `.pt`.
 
         @details Aceita `state_dict` puro ou dicionário com chave
-        `"model"`. Retorna em CPU e `eval()`, pronto para inferência.
+        `"model"`. Devolve em CPU, `eval()`.
 
         @param path Caminho do arquivo.
         @return Instância de `ActorCritic`.
         """
-        import torch
         from src.ai.network import ActorCritic
 
         net = ActorCritic(obs_dim=9, n_actions=6, hidden_dim=128)
@@ -573,8 +592,7 @@ class Experimenter(Application):
         """@brief Funde o host com foguetes que colidem em alta velocidade.
 
         @details Sobrevive o mais massivo. `rocket_host` é atualizado
-        se o host for absorvido; `purge_inactive` remove os absorvidos
-        do mundo logo em seguida.
+        se o host for absorvido.
         """
         host = self.rocket_host
         if host is None or not host.active:
@@ -595,37 +613,153 @@ class Experimenter(Application):
                 break
 
     def get_fitness(self) -> list[float]:
-        """@brief Recompensa acumulada de cada foguete/rede.
+        """@brief Cópia da recompensa acumulada de cada foguete.
 
-        @return Cópia de `self.rewards`, na ordem de `self.rockets`.
+        @return Lista na ordem de `self.rockets`.
         """
         return list(self.rewards)
 
-    def _end_generation(self) -> None:
-        """@brief Encerra a geração: loga, evolui ou para o treino.
+    def _write_generation_log(self, fitness: list[float]) -> None:
+        """@brief Anexa uma linha JSONL com as métricas da geração.
 
-        @details Se `generation + 1 >= max_generations`, salva o
-        campeão e chama `stop()`. Caso contrário, evolui a população
-        e reconstrói o mundo in-place — a janela nunca fecha.
+        @details Uma linha por geração em `self.log_path`. Chamado
+        antes de `evolve`, quando `self.rockets` ainda aponta para a
+        geração concluída. Formato estável — alterar campos quebra
+        análise histórica.
+
+        @param fitness Recompensa final de cada indivíduo.
         """
+        host = self.rocket_host
+        if host is None or not fitness:
+            return
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        n = len(fitness)
+        sorted_f = sorted(fitness)
+        mean_f = sum(fitness) / n
+        var_f = sum((x - mean_f) ** 2 for x in fitness) / n
+        median_f = (
+            sorted_f[n // 2] if n % 2 == 1
+            else 0.5 * (sorted_f[n // 2 - 1] + sorted_f[n // 2])
+        )
+
+        r_ref = self._r_ref[0] if self._r_ref else 0.0
+        v_ref = self._v_ref[0] if self._v_ref else 0.0
+        mu = self.sim_config.gravitational_constant * (
+            host.mass + (self.rockets[0].mass if self.rockets else 0.0)
+        )
+        T_orbit = (
+            2.0 * math.pi * math.sqrt(r_ref ** 3 / mu)
+            if r_ref > 0.0 and mu > 0.0 else 0.0
+        )
+
+        terminals: dict[str, int] = {}
+        for reason in self.terminal_reasons:
+            key = reason if reason is not None else "running"
+            terminals[key] = terminals.get(key, 0) + 1
+
+        individuals = []
+        for i in range(n):
+            rocket = self.rockets[i]
+            steps_i = max(self.steps[i], 1)
+            individuals.append({
+                "idx": i,
+                "reward": round(float(fitness[i]), 4),
+                "terminal": self.terminal_reasons[i],
+                "steps": int(self.steps[i]),
+                "max_r_ratio": (
+                    round(float(self.max_r[i] / r_ref), 4)
+                    if r_ref > 0.0 else 0.0
+                ),
+                "in_band_ratio": round(
+                    float(self.in_band_steps[i] / steps_i), 4
+                ),
+                "half_awarded": bool(self.half_orbit_awarded[i]),
+                "fuel_used": round(float(rocket.fuel_max - rocket.fuel), 2),
+            })
+
+        best_idx = max(range(n), key=lambda i: fitness[i])
+
+        entry = {
+            "event": "generation",
+            "gen": int(self.generation),
+            "wall_time_s": round(perf_counter() - self._gen_start_time, 3),
+            "alpha": round(float(self._current_alpha), 4),
+            "host_mass": round(float(host.mass), 2),
+            "host_radius": round(float(host.radius), 2),
+            "r_ref": round(float(r_ref), 2),
+            "v_ref": round(float(v_ref), 4),
+            "orbital_period_s": round(float(T_orbit), 3),
+            "max_steps": int(self._EPISODE_MAX_STEPS),
+            "steps_run": int(self.episode_step),
+            "population_size": n,
+            "fitness": {
+                "best": round(float(sorted_f[-1]), 4),
+                "avg": round(float(mean_f), 4),
+                "median": round(float(median_f), 4),
+                "std": round(float(math.sqrt(var_f)), 4),
+                "min": round(float(sorted_f[0]), 4),
+            },
+            "terminals": terminals,
+            "best_idx": int(best_idx),
+            "best_ever": (
+                round(float(self._best_ever), 4)
+                if self._best_ever != -math.inf else None
+            ),
+            "best_ever_gen": (
+                int(self._best_ever_gen)
+                if self._best_ever_gen >= 0 else None
+            ),
+            "individuals": individuals,
+        }
+
+        with self.log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def _end_generation(self) -> None:
+        """@brief Loga, evolui (ou encerra) e reconstrói o experimento.
+
+        @details Idempotente: chamadas após `training_done=True` são
+        no-op. No caminho de "max_generations atingido", NÃO salva a
+        rede aqui — `shutdown()` faz isso, cobrindo também o caso de
+        janela fechada antes do fim.
+        """
+        if self.training_done:
+            return
+
         fitness = self.get_fitness()
         self.history.append(fitness)
 
         best = max(fitness)
         avg = sum(fitness) / len(fitness)
+        gen_dt = perf_counter() - self._gen_start_time
+
+        if best > self._best_ever:
+            self._best_ever = best
+            self._best_ever_gen = self.generation
+            if self.population is not None:
+                best_idx = max(range(len(fitness)), key=lambda i: fitness[i])
+                # Clone independente: o dict sobrevive à próxima evolução.
+                self._best_ever_state = {
+                    k: v.detach().clone()
+                    for k, v in self.population[best_idx].state_dict().items()
+                }
+
         counts: dict[str, int] = {}
         for reason in self.terminal_reasons:
             key = reason if reason is not None else "running"
             counts[key] = counts.get(key, 0) + 1
 
+        self._write_generation_log(fitness)
+
         print(
-            f"[gen {self.generation:3d}] "
-            f"best={best:+7.2f}  avg={avg:+7.2f}  terminais={counts}"
+            f"[gen {self.generation:3d}] α={self._current_alpha:.2f}  "
+            f"best={best:+7.2f}  avg={avg:+7.2f}  "
+            f"dt={gen_dt:.1f}s  terminais={counts}"
         )
 
         if self.generation + 1 >= self.max_generations:
             self.training_done = True
-            self._save_champion(fitness)
             self.stop()
             return
 
@@ -645,25 +779,66 @@ class Experimenter(Application):
         self.generation += 1
         self.experiment_single_host(self.population)
 
-    def _save_champion(self, fitness: list[float]) -> None:
-        """@brief Salva em disco o campeão da última geração.
+    def _save_best_ever(self) -> None:
+        """@brief Salva a melhor rede global em `best_ever.pt`.
 
-        @param fitness Lista de recompensas por indivíduo.
+        @details Formato é `state_dict` puro (mesmo consumido por
+        `load_network`). Arquivo é sobrescrito se já existir.
         """
-        if self.population is None or not fitness:
+        if self._best_ever_state is None:
+            print("[shutdown] nenhuma geração concluída — sem rede a salvar.")
             return
-        best_idx = max(range(len(fitness)), key=lambda i: fitness[i])
 
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        path = self.output_dir / f"champion_gen_{self.generation:03d}.pt"
-        torch.save(self.population[best_idx].state_dict(), path)
-        print(
-            f"[save] campeão da gen {self.generation} "
-            f"(fitness {fitness[best_idx]:+.2f}) em {path}"
-        )
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            path = self.output_dir / "best_ever.pt"
+            torch.save(self._best_ever_state, path)
+            print(
+                f"[save] melhor rede global: fitness {self._best_ever:+.2f} "
+                f"(gen {self._best_ever_gen}) em {path}"
+            )
+        except Exception as exc:
+            print(f"[shutdown] falha ao salvar melhor rede: {exc}")
+
+    def _write_session_end_log(self) -> None:
+        """@brief Anexa a entrada final da sessão ao JSONL.
+
+        @details Última linha tem `event="session_end"`, permitindo
+        distinguir de entradas de geração. Inclui motivo do
+        encerramento e sumário do campeão.
+        """
+        if not self.log_path.parent.exists():
+            return
+
+        reason = "max_generations" if self.training_done else "interrupted"
+        gens_completed = self.generation + (1 if self.training_done else 0)
+
+        entry = {
+            "event": "session_end",
+            "reason": reason,
+            "generations_completed": int(gens_completed),
+            "best_ever": (
+                round(float(self._best_ever), 4)
+                if self._best_ever != -math.inf else None
+            ),
+            "best_ever_gen": (
+                int(self._best_ever_gen)
+                if self._best_ever_gen >= 0 else None
+            ),
+            "has_saved_network": self._best_ever_state is not None,
+        }
+
+        try:
+            with self.log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            print(f"[shutdown] falha ao escrever session_end: {exc}")
 
     def update(self, delta_time: float) -> None:
-        """@brief Zoom e pan da câmera (sem controle manual do foguete)."""
+        """@brief Zoom, pan e seleção de foguete por clique.
+
+        @param delta_time Tempo desde o último frame.
+        """
         if self.input.mouse_wheel != 0:
             self.camera.zoom_at(
                 self.input.mouse_position,
@@ -683,7 +858,6 @@ class Experimenter(Application):
                 try:
                     self._selected_rocket_idx = self.rockets.index(picked)
                 except ValueError:
-                    # Foguete válido, mas não rastreado (defensivo).
                     self.selected_rocket = None
                     self._selected_rocket_idx = None
             else:
@@ -698,10 +872,9 @@ class Experimenter(Application):
     def fixed_update(self, fixed_delta_time: float) -> None:
         """@brief Passo físico: decisão, integração, recompensa, transição.
 
-        @details A geração encerra em três casos: todos morreram, o
-        limite global de passos foi atingido, ou o host ficou inativo
-        (defensivo — impede loop infinito). Nesses casos, sobreviventes
-        recebem timeout e `_end_generation` reconstrói o experimento.
+        @details A geração encerra quando todos morreram, o limite de
+        passos é atingido, ou o host fica inativo. Sobreviventes nesse
+        ponto recebem timeout explícito.
 
         @param fixed_delta_time Passo fixo em segundos.
         """
@@ -762,7 +935,6 @@ class Experimenter(Application):
                 or host is None
                 or not host.active
         ):
-            # Sobreviventes no limite global recebem timeout explícito.
             for i in range(len(self.alive)):
                 if self.alive[i]:
                     self.rewards[i] += self._TERMINAL_TIMEOUT
@@ -776,6 +948,41 @@ class Experimenter(Application):
         self._resolve_merges()
         self.world.purge_inactive()
 
+    def _draw_target_orbit(self, renderer) -> None:
+        """@brief Desenha o círculo-alvo da geração e a banda de tolerância.
+
+        @details Linha principal em `r_ref = α · host.radius`; duas
+        linhas internas marcam `r_ref · (1 ± _STABLE_R_BAND)`.
+
+        @param renderer Renderizador alvo.
+        """
+        host = self.rocket_host
+        if host is None or not host.active:
+            return
+        if self._current_alpha <= 0.0:
+            return
+
+        center_screen = self.camera.world_to_screen(host.position)
+        radius_screen = self.camera.world_to_screen_size(
+            self._current_alpha * host.radius
+        )
+
+        renderer.draw_circle(
+            (120, 200, 255), center_screen, radius_screen, width=1,
+        )
+        for factor in (
+            1.0 - self._STABLE_R_BAND,
+            1.0 + self._STABLE_R_BAND,
+        ):
+            renderer.draw_circle(
+                (80, 140, 190),
+                center_screen,
+                self.camera.world_to_screen_size(
+                    self._current_alpha * host.radius * factor
+                ),
+                width=1,
+            )
+
     def _draw_observation_labels(
         self,
         renderer,
@@ -785,10 +992,14 @@ class Experimenter(Application):
     ) -> None:
         """@brief Desenha o vetor de observação no canto superior direito.
 
-        @details `anchor="topright"` alinha a borda direita de cada linha
-        em `x`, independentemente do comprimento do texto — sem precisar
-        medir cada label. Valores vêm do buffer `_selected_obs`, então
-        nenhuma lista é alocada por frame.
+        @details `anchor="topright"` alinha a borda direita de cada
+        linha sem medir texto. Sem alocação por frame: valores vêm de
+        `self._selected_obs`.
+
+        @param renderer Renderizador alvo.
+        @param rocket Foguete selecionado.
+        @param obs Buffer com os 9 valores.
+        @param idx Índice do foguete em `self.rockets`.
         """
         x = self.config.width - 10
         y = 10
@@ -826,11 +1037,13 @@ class Experimenter(Application):
             y += line_height
 
     def render(self, renderer) -> None:
-        """@brief Desenha o mundo, a seleção e o HUD (geração/vivos/obs).
+        """@brief Desenha órbita-alvo, mundo, seleção e HUD.
 
         @param renderer Renderizador alvo.
         """
         alpha = self.clock.interpolation_alpha
+
+        self._draw_target_orbit(renderer)
 
         if self.selected_rocket is not None and self.selected_rocket.active:
             self.selected_rocket.render_selection(
@@ -855,6 +1068,23 @@ class Experimenter(Application):
             color=(180, 220, 255),
         )
 
+        host = self.rocket_host
+        if host is not None and self._current_alpha > 0.0:
+            renderer.draw_text(
+                f"α = {self._current_alpha:.3f}",
+                (10, 74),
+                size=22,
+                color=(255, 220, 120),
+            )
+
+        if self._EPISODE_MAX_STEPS > 0:
+            renderer.draw_text(
+                f"Max passos = {self._EPISODE_MAX_STEPS}",
+                (10, 104),
+                size=22,
+                color=(255, 220, 120),
+            )
+
         rocket = self.selected_rocket
         if rocket is None or not rocket.active:
             if rocket is not None:
@@ -862,7 +1092,6 @@ class Experimenter(Application):
                 self._selected_rocket_idx = None
             return
 
-        host = self.rocket_host
         if host is None or not host.active:
             return
 
@@ -870,13 +1099,27 @@ class Experimenter(Application):
         if idx is None:
             return
 
-        # Buffer reutilizado: `out=self._selected_obs` evita alocar
-        # uma lista nova a cada frame.
         obs = self._build_observation_for(rocket, host, out=self._selected_obs)
         if obs is None:
             return
 
         self._draw_observation_labels(renderer, rocket, obs, idx)
+
+    def shutdown(self) -> None:
+        """@brief Finaliza a sessão: salva melhor rede e fecha o log.
+
+        @details Chamado por `Application.run()` no `finally`, cobrindo
+        os três caminhos de término: janela fechada (`quit_requested`),
+        `max_generations` atingido, ou exceção no loop principal.
+        Idempotente via `_shutdown_done`.
+        """
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
+
+        self._save_best_ever()
+        self._write_session_end_log()
+        super().shutdown()
 
 
 def main() -> None:
@@ -890,7 +1133,7 @@ def main() -> None:
     )
     sim_config = SimulationConfig()
 
-    population = NeuralPopulation(size=40, seed=42)
+    population = NeuralPopulation(size=100, seed=42)
 
     app = Experimenter(
         config, sim_config,
@@ -902,7 +1145,9 @@ def main() -> None:
         base_seed=42,
     )
     app.experiment_single_host(population)
+    print(f"[log] métricas em {app.log_path} (JSON Lines)")
     app.run()
+    print(f"[done] log final: {app.log_path}")
 
 
 if __name__ == "__main__":
