@@ -56,9 +56,9 @@ class Experimenter(Application):
     _BONUS_HALF_ORBIT = 50.0         # Bônus único ao cruzar π em banda (não-terminal).
     _TERMINAL_COLLISION = -100.0     # Penalidade terminal por colisão destrutiva.
     _TERMINAL_ESCAPE = -50.0         # Penalidade terminal ao ultrapassar 8·R_host.
-    _TERMINAL_REDOCKED = -5.0        # Penalidade terminal por reacoplar após decolar.
+    _TERMINAL_REDOCKED = -50.0        # Penalidade terminal por reacoplar após decolar.
     _TERMINAL_FUEL = -20.0           # Penalidade terminal por combustível esgotado.
-    _TERMINAL_TIMEOUT = -5.0         # Penalidade terminal ao esgotar passos.
+    _TERMINAL_TIMEOUT = -30.0         # Penalidade terminal ao esgotar passos.
 
     # --- Geometria e física ------------------------------------------
     _TIMEOUT_ORBITS = 2.0            # Timeout = este nº × período orbital no r_ref.

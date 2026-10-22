@@ -55,6 +55,8 @@ class Application(ABC):
             parallax=0.05
         )
 
+        self.speed_multiplier = 1.0
+
     def run(self) -> None:
         """@brief Executa o loop principal até `stop()` ou quit ser solicitado.
 
@@ -77,9 +79,16 @@ class Application(ABC):
 
                 # Passos fixos: `has_fixed_step` respeita `max_fixed_steps`,
                 # evitando a espiral da morte após um stall.
+                steps_to_run = 0
                 while self.clock.has_fixed_step():
-                    self.fixed_update(self.clock.fixed_timestep)
+                    steps_to_run += 1
                     self.clock.consume_fixed_step()
+                accelerated_steps = int(steps_to_run * self.speed_multiplier)
+                if accelerated_steps == 0 and steps_to_run > 0 and self.speed_multiplier >= 1.0:
+                    accelerated_steps = steps_to_run
+
+                for _ in range(accelerated_steps):
+                    self.fixed_update(self.clock.fixed_timestep)
 
                 self.background.update(self.camera.position)
                 self.background.draw(self.renderer)
