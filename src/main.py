@@ -5,6 +5,9 @@ import argparse
 from pathlib import Path
 from typing import Optional, Union
 from time import perf_counter
+import torch
+
+from src.ai.network import ActorCritic
 from src.config import Configs, SimulationConfig
 from src.engine.application import Application
 from src.engine.memory_monitor import MemoryMonitor
@@ -104,6 +107,7 @@ class Gravitation(Application):
         config: Configs,
         sim_config: SimulationConfig,
         memory_monitor: MemoryMonitor | None = None,
+        model: Path | str = None
     ) -> None:
         """@brief Inicializa a cena, subsistemas e o sistema estelar.
 
@@ -147,8 +151,17 @@ class Gravitation(Application):
 
         # --- Controle (jogador x rede)
         self.ai_controlled = False
-        # Podemos carregar agora ou não
-        self.rocket_network = None  # ActorCritic ou None
+        self.rocket_network = model
+        if model is not None:
+            net = ActorCritic(obs_dim=9, n_actions=6, hidden_dim=128)
+            state = torch.load(model, map_location="cpu")
+            if isinstance(state, dict) and "model" in state:
+                state = state["model"]
+
+            net.load_state_dict(state)
+            net.eval()
+            self.rocket_network = net
+            print(f"[AI] Rede Carregada de {model}")
         self.rocket_host = None  # corpo de referência p/ observação
 
         # Iniciamos o sistema
@@ -1396,6 +1409,17 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--model",
+        type=Path,
+        default=None,
+        metavar="CAMINHO",
+        help=(
+            "Checkpoint .pt de ActorCritic (ex.: checkpoints/best_ever.pt). "
+            "Sem esta flag, o foguete só responde ao jogador."
+        ),
+    )
+
+    parser.add_argument(
         "--dump-interval",
         type=float,
         default=1,
@@ -1455,7 +1479,7 @@ def main() -> None:
             + (f" (máx. {args.max_dumps})" if args.max_dumps else "")
         )
 
-    Gravitation(config, sim_config, memory_monitor=monitor).run()
+    Gravitation(config, sim_config, memory_monitor=monitor, model=args.model).run()
 
 if __name__ == "__main__":
     main()

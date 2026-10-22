@@ -67,6 +67,14 @@ class Experimenter(Application):
     _ESCAPE_FACTOR = 8.0             # Múltiplo de R_host que caracteriza fuga.
     _POTENTIAL_CAP = 4.0             # Teto de cada termo de erro no Φ (anti-explosão).
 
+
+    MUTATION_RATE_MAX = 0.06
+    MUTATION_RATE_MIN = 0.02
+
+    _ALPHA_MIN = 1.5
+    _ALPHA_MAX_START = 2.5
+    _ALPHA_MAX_END = 5.0
+
     def __init__(
         self,
         config: Configs,
@@ -74,7 +82,6 @@ class Experimenter(Application):
         max_generations: int = 50,
         method: str = "sexual",
         elite_count: int = 1,
-        mutation_rate: float = 0.05,
         mutation_std: float = 0.02,
         base_seed: int = 42,
         output_dir: Optional[Path] = None,
@@ -133,7 +140,6 @@ class Experimenter(Application):
 
         self.method = method
         self.elite_count = elite_count
-        self.mutation_rate = mutation_rate
         self.mutation_std = mutation_std
         self.base_seed = base_seed
         self.output_dir = output_dir or Path("checkpoints")
@@ -191,7 +197,7 @@ class Experimenter(Application):
         if host_radius is None:
             host_radius = random.uniform(*self._HOST_RADIUS_RANGE)
         if rocket_alpha is None:
-            rocket_alpha = random.uniform(*self._ALPHA_RANGE)
+            rocket_alpha = random.uniform(*self._current_alpha_range())
 
         cx = self.sim_config.world_width * 0.5
         cy = self.sim_config.world_height * 0.5
@@ -755,6 +761,7 @@ class Experimenter(Application):
         print(
             f"[gen {self.generation:3d}] α={self._current_alpha:.2f}  "
             f"best={best:+7.2f}  avg={avg:+7.2f}  "
+            f"mut={self.current_mutation_rate():.3f}  "
             f"dt={gen_dt:.1f}s  terminais={counts}"
         )
 
@@ -772,12 +779,36 @@ class Experimenter(Application):
             fitness,
             method=self.method,
             elite_count=self.elite_count,
-            mutation_rate=self.mutation_rate,
+            mutation_rate=self.current_mutation_rate(),
             mutation_std=self.mutation_std,
             seed=self.base_seed + self.generation + 1,
         )
         self.generation += 1
         self.experiment_single_host(self.population)
+
+    def current_mutation_rate(self):
+        total = max(1, self.max_generations - 1)
+        progress = min(1.0, self.generation / total)
+        return (
+            self.MUTATION_RATE_MAX * (1 - progress) + self.MUTATION_RATE_MIN * progress
+        )
+
+    def _current_alpha_range(self) -> tuple[float, float]:
+        """@brief Intervalo efetivo de α para a geração atual.
+
+        @details Interpolação linear entre `_ALPHA_MAX_START` e
+        `_ALPHA_MAX_END` com o progresso do treino. Não altera
+        `_ALPHA_RANGE` original (que pode ser usado em avaliação).
+        """
+        progress = min(
+            1.0,
+            self.generation / max(1, self.max_generations - 1),
+        )
+        hi = (
+            self._ALPHA_MAX_START
+            + (self._ALPHA_MAX_END - self._ALPHA_MAX_START) * progress
+        )
+        return (self._ALPHA_MIN, hi)
 
     def _save_best_ever(self) -> None:
         """@brief Salva a melhor rede global em `best_ever.pt`.
@@ -844,6 +875,11 @@ class Experimenter(Application):
                 self.input.mouse_position,
                 1.1 ** self.input.mouse_wheel,
             )
+
+        if self.input.was_pressed(pygame.K_RIGHT):
+            self.speed_multiplier = min(3.0, self.speed_multiplier + 0.5)
+        if self.input.was_pressed(pygame.K_LEFT):
+            self.speed_multiplier = max(1.0, self.speed_multiplier - 0.5)
 
         if self.input.was_mouse_button_clicked(pygame.BUTTON_LEFT):
             pick_alpha = min(1.0, self.clock.interpolation_alpha)
@@ -930,10 +966,10 @@ class Experimenter(Application):
             self._update_rewards(host)
 
         if (
-                not any(self.alive)
-                or self.episode_step >= self._EPISODE_MAX_STEPS
-                or host is None
-                or not host.active
+            not any(self.alive)
+            or self.episode_step >= self._EPISODE_MAX_STEPS
+            or host is None
+            or not host.active
         ):
             for i in range(len(self.alive)):
                 if self.alive[i]:
@@ -1050,6 +1086,14 @@ class Experimenter(Application):
                 renderer, self.camera, alpha,
             )
 
+        speed_label = f"{self.speed_multiplier:.2f}x"
+        renderer.draw_text(
+            f"Velocidade = {speed_label}",
+            (10, 134),
+            size=22,
+            color=(140, 220, 140),
+        )
+
         self.world.render(renderer, self.camera, alpha)
 
         n_alive = sum(self.alive) if self.alive else 0
@@ -1140,7 +1184,6 @@ def main() -> None:
         max_generations=150,
         method="sexual",
         elite_count=5,
-        mutation_rate=0.10,
         mutation_std=0.03,
         base_seed=42,
     )
