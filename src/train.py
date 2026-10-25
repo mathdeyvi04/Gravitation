@@ -61,7 +61,7 @@ class Experimenter(Application):
     _TERMINAL_TIMEOUT = -30.0         # Penalidade terminal ao esgotar passos.
 
     # --- Geometria e física ------------------------------------------
-    _TIMEOUT_ORBITS = 2.0            # Timeout = este nº × período orbital no r_ref.
+    _TIMEOUT_ORBITS = 3.0            # Timeout = este nº × período orbital no r_ref.
     _STABLE_R_BAND = 0.05            # Tolerância relativa em r/r_ref para "em banda".
     _STABLE_V_BAND = 0.10            # Tolerância relativa em v_r/v_ref e v_t/v_ref.
     _ESCAPE_FACTOR = 8.0             # Múltiplo de R_host que caracteriza fuga.
@@ -74,6 +74,10 @@ class Experimenter(Application):
     _ALPHA_MIN = 1.5
     _ALPHA_MAX_START = 2.5
     _ALPHA_MAX_END = 5.0
+    _INITIAL_STATE_DOCKED_PROB = 0.5
+    _INITIAL_STATE_RREF_MIN = 0.6
+    _INITIAL_STATE_RREF_MAX = 2.2
+    _INITIAL_STATE_RETRO_PROB = 0.4
 
     def __init__(
         self,
@@ -223,7 +227,10 @@ class Experimenter(Application):
             n = len(population)
             for i in range(n):
                 angle = docking_base_angle + 2.0 * math.pi * i / n
-                self._spawn_rocket(host, angle, rocket_alpha)
+                if random.random() < self._INITIAL_STATE_DOCKED_PROB:
+                    self._spawn_rocket(host, angle, rocket_alpha)
+                else:
+                    self._spawn_rocket_in_flight(host, rocket_alpha)
             self.networks = list(population)
 
         self._current_alpha = float(rocket_alpha)
@@ -296,6 +303,84 @@ class Experimenter(Application):
         self.rockets.append(rocket)
         if host is not None:
             rocket.dock_to(host, angle)
+        return rocket
+
+    def _spawn_rocket_in_flight(
+        self, host: Optional[MassObject], alpha: float,
+    ) -> Rocket:
+        """@brief Cria um foguete já em voo, em estado orbital aleatório.
+
+        @details Amostra `r/r_ref` log-uniforme em
+        `[_INITIAL_STATE_RREF_MIN, _INITIAL_STATE_RREF_MAX]`, clampeia
+        ao envelope físico (acima da casca de acoplagem, abaixo de
+        escape), e sorteia `v_r` e `v_t` proporcionais a `v_circ(r)`
+        no local. `v_t < 0` (retrógrado) aparece com probabilidade
+        `_INITIAL_STATE_RETRO_PROB`, ensinando a política a lidar com
+        sentido contrário. Bico aponta retrogrado em 60% dos casos —
+        a atitude correta para descer orbitalmente.
+
+        @param host Corpo hospedeiro.
+        @param alpha α do alvo orbital.
+        @return O foguete criado.
+        """
+        G = self.sim_config.gravitational_constant
+        mu = G * (host.mass + self.ROCKET_MASS) if host is not None else 0.0
+        if host is None or mu <= 0.0:
+            return self._spawn_rocket(host, random.uniform(0.0, 2.0 * math.pi), alpha)
+
+        r_ref = alpha * host.radius
+
+        # Amostragem log-uniforme em r_ref, depois clamp físico.
+        ratio = math.exp(random.uniform(
+            math.log(self._INITIAL_STATE_RREF_MIN),
+            math.log(self._INITIAL_STATE_RREF_MAX),
+        ))
+        r_init = ratio * r_ref
+        r_init = max(r_init, 1.15 * host.radius)         # acima da casca
+        r_init = min(r_init, 0.85 * self._ESCAPE_FACTOR * host.radius)
+
+        v_circ = math.sqrt(mu / r_init)
+        v_t = v_circ * random.uniform(0.55, 1.15)
+        if random.random() < self._INITIAL_STATE_RETRO_PROB:
+            v_t = -v_t
+        v_r = v_circ * random.uniform(-0.25, 0.25)
+
+        angle = random.uniform(0.0, 2.0 * math.pi)
+        ca, sa = math.cos(angle), math.sin(angle)
+
+        position = pygame.Vector2(
+            host.position.x + r_init * ca,
+            host.position.y + r_init * sa,
+        )
+        velocity = pygame.Vector2(
+            host.velocity.x + v_r * ca - v_t * sa,
+            host.velocity.y + v_r * sa + v_t * ca,
+        )
+
+        # Bico: 60% apontado retrógrado ao movimento relativo,
+        # 40% aleatório. Viés para "atitude útil" acelera o aprendizado
+        # de descida sem remover exploração.
+        if random.random() < 0.6:
+            nose_angle = angle + math.atan2(-v_r, -v_t)
+        else:
+            nose_angle = random.uniform(-math.pi, math.pi)
+
+        rocket = Rocket(
+            config=self.sim_config,
+            mass=self.ROCKET_MASS,
+            position=position,
+            velocity=velocity,
+            alpha=alpha,
+            angle=nose_angle,
+            body_length=self.ROCKET_BODY_LENGTH,
+            body_width=self.ROCKET_BODY_WIDTH,
+            nose_length=self.ROCKET_NOSE_LENGTH,
+            thrust_acceleration=self.ROCKET_THRUST_ACCELERATION,
+            color=self.ROCKET_COLOR,
+            nose_color=self.ROCKET_NOSE_COLOR,
+        )
+        self.world.add(rocket)
+        self.rockets.append(rocket)
         return rocket
 
     def _build_observation_for(
