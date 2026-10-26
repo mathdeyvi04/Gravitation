@@ -1,10 +1,8 @@
-DIR_PROJECT = ./src
-
 .PHONY: show clean debug
 
 show:
 	# Mostramos o projeto inteiro
-	@grep "" -r DIR_PROJECT --exclude-dir=*checkpoints
+	@grep "" -r ./src --exclude-dir=*checkpoints
 
 debug:
 	python3 -m src.main --monitor-memory
@@ -12,4 +10,4 @@ debug:
 	python3 src/assets/mem_report.py mem_dumps/ --objs
 
 clean:
-	cleanup "__pycache__" -r DIR_PROJECT
+	cleanup "__pycache__" -r ./src
