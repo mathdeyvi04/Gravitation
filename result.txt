@@ -1,0 +1,152 @@
+[log] métricas em checkpoints\training_log.jsonl (JSON Lines)
+[gen   0] α=1.69  best= -29.07  avg= -85.66  mut=0.060  dt=25.7s  terminais={'timeout': 24, 'collision': 32, 'escape': 40, 'never_launched': 2, 'fuel_exhausted': 2}
+[gen   1] α=2.51  best= -23.26  avg= -72.10  mut=0.060  dt=53.8s  terminais={'timeout': 20, 'never_launched': 9, 'escape': 42, 'fuel_exhausted': 10, 'collision': 19}
+[gen   2] α=2.27  best= -30.01  avg= -74.49  mut=0.059  dt=37.2s  terminais={'collision': 28, 'escape': 35, 'never_launched': 10, 'timeout': 25, 'fuel_exhausted': 2}
+[gen   3] α=1.76  best= -25.89  avg= -82.88  mut=0.059  dt=22.4s  terminais={'never_launched': 10, 'escape': 42, 'collision': 31, 'timeout': 17}
+[gen   4] α=2.08  best= -27.16  avg= -64.52  mut=0.059  dt=50.3s  terminais={'timeout': 43, 'collision': 26, 'escape': 23, 'never_launched': 8}
+[gen   5] α=2.52  best= +73.17  avg= -46.80  mut=0.059  dt=86.6s  terminais={'timeout': 64, 'never_launched': 9, 'fuel_exhausted': 4, 'collision': 12, 'escape': 11}
+[gen   6] α=2.20  best= +46.20  avg= -60.46  mut=0.058  dt=52.8s  terminais={'timeout': 43, 'collision': 18, 'escape': 27, 'never_launched': 12}
+[gen   7] α=2.13  best= -25.90  avg= -61.15  mut=0.058  dt=53.3s  terminais={'collision': 16, 'timeout': 42, 'escape': 28, 'never_launched': 13, 'redocked': 1}
+[gen   8] α=2.21  best= -22.33  avg= -53.90  mut=0.058  dt=63.8s  terminais={'timeout': 52, 'never_launched': 17, 'collision': 22, 'escape': 9}
+[gen   9] α=1.76  best=  +3.29  avg= -62.45  mut=0.058  dt=38.7s  terminais={'collision': 29, 'timeout': 42, 'escape': 17, 'never_launched': 12}
+[gen  10] α=2.47  best= +87.60  avg= -50.33  mut=0.057  dt=78.9s  terminais={'timeout': 54, 'escape': 15, 'never_launched': 14, 'collision': 17}
+[gen  11] α=1.69  best= -23.87  avg= -56.99  mut=0.057  dt=50.3s  terminais={'timeout': 62, 'collision': 34, 'never_launched': 3, 'escape': 1}
+[gen  12] α=1.86  best= -15.64  avg= -58.06  mut=0.057  dt=50.1s  terminais={'collision': 31, 'timeout': 62, 'escape': 7}
+[gen  13] α=2.26  best= -24.55  avg= -53.37  mut=0.057  dt=79.3s  terminais={'timeout': 68, 'collision': 21, 'never_launched': 6, 'escape': 4, 'fuel_exhausted': 1}
+[gen  14] α=2.73  best= -11.14  avg= -54.61  mut=0.056  dt=84.1s  terminais={'never_launched': 19, 'collision': 18, 'timeout': 41, 'escape': 12, 'fuel_exhausted': 10}
+[gen  15] α=2.18  best= +25.13  avg= -60.49  mut=0.056  dt=59.6s  terminais={'timeout': 42, 'never_launched': 17, 'fuel_exhausted': 7, 'collision': 25, 'escape': 9}
+[gen  16] α=2.20  best= -25.47  avg= -63.17  mut=0.056  dt=66.0s  terminais={'collision': 29, 'never_launched': 11, 'timeout': 46, 'escape': 9, 'fuel_exhausted': 5}
+[gen  17] α=2.24  best= -25.96  avg= -66.00  mut=0.055  dt=56.3s  terminais={'timeout': 33, 'never_launched': 13, 'collision': 28, 'escape': 15, 'fuel_exhausted': 11}
+[gen  18] α=2.42  best= +18.54  avg= -49.71  mut=0.055  dt=79.2s  terminais={'timeout': 59, 'escape': 4, 'collision': 16, 'never_launched': 12, 'fuel_exhausted': 9}
+[gen  19] α=1.74  best= -20.83  avg= -50.61  mut=0.055  dt=58.0s  terminais={'timeout': 74, 'never_launched': 2, 'collision': 23, 'escape': 1}
+[gen  20] α=1.77  best=  -6.44  avg= -58.40  mut=0.055  dt=63.2s  terminais={'timeout': 72, 'collision': 24, 'never_launched': 1, 'escape': 3}
+[gen  21] α=1.57  best= -25.62  avg= -56.11  mut=0.054  dt=46.4s  terminais={'collision': 29, 'timeout': 71}
+[gen  22] α=2.04  best= +13.30  avg= -53.67  mut=0.054  dt=73.7s  terminais={'timeout': 76, 'collision': 24}
+[gen  23] α=1.65  best=  +7.79  avg= -54.50  mut=0.054  dt=55.4s  terminais={'timeout': 72, 'collision': 27, 'fuel_exhausted': 1}
+[gen  24] α=2.54  best= -22.84  avg= -61.86  mut=0.054  dt=89.6s  terminais={'timeout': 31, 'fuel_exhausted': 36, 'collision': 23, 'escape': 9, 'never_launched': 1}
+[gen  25] α=1.64  best=  -5.94  avg= -53.39  mut=0.053  dt=45.1s  terminais={'timeout': 69, 'escape': 4, 'collision': 25, 'never_launched': 2}
+[gen  26] α=2.14  best=+117.77  avg= -50.41  mut=0.053  dt=86.5s  terminais={'timeout': 69, 'collision': 19, 'never_launched': 6, 'escape': 3, 'fuel_exhausted': 3}
+[gen  27] α=2.91  best= -23.56  avg= -46.25  mut=0.053  dt=121.9s  terminais={'timeout': 61, 'never_launched': 4, 'fuel_exhausted': 20, 'collision': 10, 'escape': 5}
+[gen  28] α=2.16  best=  +8.42  avg= -44.81  mut=0.052  dt=79.2s  terminais={'timeout': 82, 'collision': 15, 'escape': 3}
+[gen  29] α=2.00  best=  -3.91  avg= -48.96  mut=0.052  dt=82.7s  terminais={'timeout': 77, 'collision': 18, 'escape': 2, 'never_launched': 3}
+[gen  30] α=2.84  best= +61.80  avg= -49.00  mut=0.052  dt=101.6s  terminais={'timeout': 53, 'fuel_exhausted': 15, 'never_launched': 10, 'escape': 3, 'collision': 19}
+[gen  31] α=2.10  best=  +5.13  avg= -43.88  mut=0.052  dt=68.1s  terminais={'timeout': 71, 'collision': 15, 'never_launched': 13, 'escape': 1}
+[gen  32] α=2.61  best=  -7.17  avg= -49.51  mut=0.051  dt=91.0s  terminais={'timeout': 74, 'collision': 18, 'never_launched': 7, 'escape': 1}
+[gen  33] α=2.38  best= +24.38  avg= -48.98  mut=0.051  dt=88.3s  terminais={'timeout': 80, 'collision': 17, 'never_launched': 3}
+[gen  34] α=2.78  best=  -4.48  avg= -55.54  mut=0.051  dt=106.9s  terminais={'fuel_exhausted': 56, 'collision': 14, 'timeout': 27, 'escape': 2, 'never_launched': 1}
+[gen  35] α=1.60  best= +83.01  avg= -47.68  mut=0.051  dt=59.0s  terminais={'collision': 23, 'timeout': 77}
+[gen  36] α=1.53  best= -23.10  avg= -53.85  mut=0.050  dt=47.0s  terminais={'timeout': 67, 'collision': 25, 'never_launched': 8}
+[gen  37] α=2.72  best=+123.65  avg= -52.70  mut=0.050  dt=108.9s  terminais={'collision': 15, 'fuel_exhausted': 46, 'timeout': 39}
+[gen  38] α=2.82  best= +72.68  avg= -51.17  mut=0.050  dt=114.6s  terminais={'collision': 12, 'fuel_exhausted': 45, 'timeout': 41, 'escape': 2}
+[gen  39] α=3.06  best= +17.13  avg= -57.19  mut=0.050  dt=111.1s  terminais={'fuel_exhausted': 56, 'timeout': 23, 'escape': 5, 'collision': 16}
+[gen  40] α=2.85  best= +24.29  avg= -48.06  mut=0.049  dt=132.2s  terminais={'timeout': 57, 'fuel_exhausted': 31, 'collision': 11, 'escape': 1}
+[gen  41] α=2.43  best= +41.29  avg= -53.72  mut=0.049  dt=85.9s  terminais={'timeout': 80, 'collision': 20}
+[gen  42] α=3.08  best=+242.63  avg= -45.53  mut=0.049  dt=143.3s  terminais={'timeout': 67, 'fuel_exhausted': 17, 'collision': 13, 'escape': 3}
+[gen  43] α=2.76  best= +41.24  avg= -49.61  mut=0.048  dt=128.9s  terminais={'fuel_exhausted': 16, 'timeout': 66, 'collision': 18}
+[gen  44] α=2.39  best= -28.31  avg= -48.46  mut=0.048  dt=93.3s  terminais={'timeout': 83, 'collision': 16, 'escape': 1}
+[gen  45] α=1.57  best= +12.45  avg= -52.03  mut=0.048  dt=54.8s  terminais={'timeout': 70, 'collision': 30}
+[gen  46] α=3.23  best= +47.54  avg= -41.68  mut=0.048  dt=148.5s  terminais={'timeout': 86, 'escape': 3, 'fuel_exhausted': 3, 'collision': 8}
+[gen  47] α=1.92  best= -19.75  avg= -45.69  mut=0.047  dt=69.9s  terminais={'timeout': 81, 'collision': 19}
+[gen  48] α=1.91  best= +50.65  avg= -44.67  mut=0.047  dt=80.0s  terminais={'collision': 19, 'timeout': 81}
+[gen  49] α=2.20  best=  +7.83  avg= -48.73  mut=0.047  dt=103.2s  terminais={'timeout': 75, 'collision': 19, 'fuel_exhausted': 3, 'escape': 3}
+[gen  50] α=2.56  best= +26.55  avg= -47.65  mut=0.047  dt=92.3s  terminais={'timeout': 78, 'collision': 21, 'escape': 1}
+[gen  51] α=2.36  best= +10.45  avg= -37.89  mut=0.046  dt=110.3s  terminais={'timeout': 92, 'collision': 8}
+[gen  52] α=1.65  best=  -1.31  avg= -46.27  mut=0.046  dt=50.6s  terminais={'collision': 22, 'timeout': 77, 'never_launched': 1}
+[gen  53] α=2.95  best= +16.86  avg= -41.84  mut=0.046  dt=153.1s  terminais={'timeout': 86, 'escape': 2, 'collision': 12}
+[gen  54] α=2.63  best=  +2.30  avg= -46.38  mut=0.046  dt=100.4s  terminais={'timeout': 80, 'collision': 20}
+[gen  55] α=3.08  best= +86.06  avg= -38.58  mut=0.045  dt=154.6s  terminais={'timeout': 89, 'collision': 9, 'escape': 2}
+[gen  56] α=2.82  best= +34.46  avg= -43.09  mut=0.045  dt=138.7s  terminais={'timeout': 85, 'collision': 14, 'escape': 1}
+[gen  57] α=2.52  best= +20.57  avg= -43.26  mut=0.045  dt=114.1s  terminais={'timeout': 83, 'escape': 3, 'collision': 14}
+[gen  58] α=2.64  best= +28.34  avg= -41.26  mut=0.044  dt=110.7s  terminais={'timeout': 86, 'collision': 14}
+[gen  59] α=2.14  best= +21.37  avg= -42.60  mut=0.044  dt=89.6s  terminais={'timeout': 83, 'collision': 17}
+[gen  60] α=2.41  best= +44.18  avg= -41.14  mut=0.044  dt=99.5s  terminais={'timeout': 86, 'collision': 14}
+[gen  61] α=2.85  best= -26.14  avg= -41.74  mut=0.044  dt=146.3s  terminais={'collision': 10, 'timeout': 87, 'escape': 3}
+[gen  62] α=1.77  best= +46.96  avg= -39.70  mut=0.043  dt=73.5s  terminais={'timeout': 86, 'collision': 14}
+[gen  63] α=2.75  best= +21.88  avg= -42.12  mut=0.043  dt=110.5s  terminais={'timeout': 86, 'collision': 14}
+[gen  64] α=2.09  best=  +0.78  avg= -44.88  mut=0.043  dt=89.4s  terminais={'timeout': 81, 'collision': 18, 'escape': 1}
+[gen  65] α=2.23  best= -20.38  avg= -47.91  mut=0.043  dt=91.7s  terminais={'collision': 21, 'timeout': 78, 'escape': 1}
+[gen  66] α=1.54  best=  +2.48  avg= -52.44  mut=0.042  dt=46.7s  terminais={'timeout': 69, 'collision': 31}
+[gen  67] α=3.57  best=  +4.14  avg= -39.84  mut=0.042  dt=235.6s  terminais={'timeout': 90, 'collision': 7, 'escape': 3}
+[gen  68] α=2.50  best= +68.77  avg= -46.69  mut=0.042  dt=112.8s  terminais={'timeout': 79, 'collision': 20, 'escape': 1}
+[gen  69] α=1.61  best= +80.95  avg= -41.32  mut=0.041  dt=57.3s  terminais={'timeout': 83, 'collision': 17}
+[gen  70] α=1.70  best=  -2.27  avg= -50.58  mut=0.041  dt=56.3s  terminais={'timeout': 72, 'collision': 28}
+[gen  71] α=3.67  best= +19.00  avg= -37.63  mut=0.041  dt=208.4s  terminais={'escape': 1, 'timeout': 93, 'collision': 5, 'fuel_exhausted': 1}
+[gen  72] α=2.41  best=  +7.39  avg= -41.89  mut=0.041  dt=107.5s  terminais={'timeout': 86, 'collision': 14}
+[gen  73] α=2.97  best=+165.87  avg= -36.67  mut=0.040  dt=158.6s  terminais={'timeout': 88, 'collision': 9, 'escape': 3}
+[gen  74] α=1.51  best= +63.30  avg= -49.25  mut=0.040  dt=46.2s  terminais={'timeout': 73, 'collision': 27}
+[gen  75] α=3.67  best= +79.06  avg= -36.49  mut=0.040  dt=203.3s  terminais={'timeout': 89, 'escape': 7, 'collision': 4}
+[gen  76] α=1.62  best= -11.65  avg= -43.70  mut=0.040  dt=48.6s  terminais={'timeout': 82, 'collision': 18}
+[gen  77] α=1.98  best= -16.99  avg= -51.56  mut=0.039  dt=59.7s  terminais={'collision': 27, 'timeout': 73}
+[gen  78] α=2.09  best=  +9.20  avg= -46.55  mut=0.039  dt=68.9s  terminais={'timeout': 78, 'collision': 22}
+[gen  79] α=2.30  best= -21.34  avg= -44.15  mut=0.039  dt=95.4s  terminais={'timeout': 83, 'collision': 16, 'escape': 1}
+[gen  80] α=3.36  best= +64.07  avg= -35.53  mut=0.039  dt=158.5s  terminais={'timeout': 91, 'collision': 6, 'escape': 3}
+[gen  81] α=2.37  best=  -1.72  avg= -40.10  mut=0.038  dt=88.9s  terminais={'collision': 11, 'timeout': 88, 'escape': 1}
+[gen  82] α=2.61  best= +54.22  avg= -42.34  mut=0.038  dt=113.5s  terminais={'collision': 16, 'timeout': 84}
+[gen  83] α=3.15  best= +50.94  avg= -41.66  mut=0.038  dt=147.7s  terminais={'timeout': 84, 'collision': 12, 'escape': 4}
+[gen  84] α=3.46  best= -18.78  avg= -42.57  mut=0.037  dt=164.0s  terminais={'timeout': 84, 'collision': 10, 'escape': 6}
+[gen  85] α=3.45  best=+233.81  avg= -36.98  mut=0.037  dt=172.8s  terminais={'timeout': 88, 'collision': 9, 'escape': 3}
+[gen  86] α=2.51  best= -20.64  avg= -40.04  mut=0.037  dt=99.4s  terminais={'timeout': 87, 'escape': 4, 'collision': 9}
+[gen  87] α=2.68  best= -23.00  avg= -44.63  mut=0.037  dt=121.9s  terminais={'timeout': 83, 'collision': 16, 'escape': 1}
+[gen  88] α=3.16  best= +49.74  avg= -42.10  mut=0.036  dt=130.6s  terminais={'timeout': 83, 'collision': 12, 'escape': 5}
+[gen  89] α=2.96  best= -22.61  avg= -46.09  mut=0.036  dt=140.6s  terminais={'timeout': 79, 'collision': 16, 'escape': 5}
+[gen  90] α=1.81  best= -13.98  avg= -49.98  mut=0.036  dt=54.2s  terminais={'collision': 26, 'timeout': 74}
+[gen  91] α=1.84  best=  -3.77  avg= -43.91  mut=0.036  dt=70.4s  terminais={'timeout': 82, 'collision': 18}
+[gen  92] α=1.63  best= -17.82  avg= -46.02  mut=0.035  dt=55.3s  terminais={'timeout': 79, 'collision': 20, 'escape': 1}
+[gen  93] α=1.60  best= -14.52  avg= -46.69  mut=0.035  dt=51.8s  terminais={'timeout': 77, 'collision': 21, 'escape': 2}
+[gen  94] α=3.06  best=+196.34  avg= -45.69  mut=0.035  dt=165.9s  terminais={'timeout': 78, 'collision': 18, 'escape': 4}
+[gen  95] α=3.33  best= +86.19  avg= -42.95  mut=0.034  dt=188.3s  terminais={'timeout': 85, 'collision': 15}
+[gen  96] α=3.93  best=+205.90  avg= -40.44  mut=0.034  dt=209.1s  terminais={'timeout': 78, 'collision': 13, 'escape': 9}
+[gen  97] α=3.52  best= +17.89  avg= -45.11  mut=0.034  dt=174.7s  terminais={'timeout': 81, 'collision': 13, 'escape': 6}
+[gen  98] α=1.59  best=  -2.97  avg= -47.66  mut=0.034  dt=59.5s  terminais={'timeout': 75, 'collision': 24, 'never_launched': 1}
+[gen  99] α=3.22  best=  -0.75  avg= -49.40  mut=0.033  dt=136.4s  terminais={'timeout': 74, 'collision': 19, 'escape': 7}
+[gen 100] α=2.40  best= +12.78  avg= -48.09  mut=0.033  dt=99.0s  terminais={'timeout': 77, 'collision': 21, 'escape': 2}
+[gen 101] α=2.57  best= -10.70  avg= -46.92  mut=0.033  dt=100.0s  terminais={'timeout': 79, 'collision': 19, 'escape': 2}
+[gen 102] α=1.97  best=  -4.81  avg= -48.40  mut=0.033  dt=86.2s  terminais={'collision': 22, 'timeout': 77, 'escape': 1}
+[gen 103] α=2.07  best= -20.18  avg= -44.86  mut=0.032  dt=85.9s  terminais={'timeout': 82, 'collision': 18}
+[gen 104] α=2.42  best=  -0.50  avg= -37.61  mut=0.032  dt=125.8s  terminais={'collision': 8, 'timeout': 91, 'escape': 1}
+[gen 105] α=2.46  best= -11.31  avg= -41.08  mut=0.032  dt=106.2s  terminais={'timeout': 87, 'collision': 13}
+[gen 106] α=3.22  best= +47.48  avg= -41.99  mut=0.032  dt=171.8s  terminais={'timeout': 85, 'collision': 13, 'escape': 2}
+[gen 107] α=2.82  best= -26.66  avg= -41.85  mut=0.031  dt=133.3s  terminais={'timeout': 87, 'collision': 12, 'escape': 1}
+[gen 108] α=3.56  best= +54.91  avg= -41.70  mut=0.031  dt=194.5s  terminais={'timeout': 85, 'escape': 5, 'collision': 10}
+[gen 109] α=1.56  best= -11.46  avg= -48.15  mut=0.031  dt=47.6s  terminais={'collision': 25, 'timeout': 75}
+[gen 110] α=2.94  best= +11.19  avg= -42.20  mut=0.030  dt=154.4s  terminais={'timeout': 86, 'collision': 13, 'escape': 1}
+[gen 111] α=3.91  best=  -0.48  avg= -36.08  mut=0.030  dt=233.8s  terminais={'timeout': 94, 'escape': 4, 'collision': 2}
+[gen 112] α=2.81  best= -21.00  avg= -47.37  mut=0.030  dt=139.4s  terminais={'timeout': 80, 'collision': 19, 'escape': 1}
+[gen 113] α=4.18  best= +53.52  avg= -40.47  mut=0.030  dt=228.4s  terminais={'timeout': 87, 'escape': 6, 'collision': 7}
+[gen 114] α=3.47  best= +35.38  avg= -42.83  mut=0.029  dt=162.8s  terminais={'timeout': 82, 'collision': 12, 'escape': 6}
+[gen 115] α=3.76  best= +14.42  avg= -42.22  mut=0.029  dt=195.3s  terminais={'timeout': 86, 'escape': 3, 'collision': 11}
+[gen 116] α=4.05  best= -18.79  avg= -43.87  mut=0.029  dt=216.5s  terminais={'escape': 6, 'timeout': 83, 'collision': 11}
+[gen 117] α=1.79  best= +84.73  avg= -45.55  mut=0.029  dt=59.9s  terminais={'collision': 23, 'timeout': 77}
+[gen 118] α=1.96  best=  +1.53  avg= -52.99  mut=0.028  dt=67.0s  terminais={'timeout': 70, 'collision': 30}
+[gen 119] α=2.74  best= +90.52  avg= -41.85  mut=0.028  dt=121.0s  terminais={'timeout': 85, 'collision': 15}
+[gen 120] α=1.99  best=  -7.29  avg= -44.85  mut=0.028  dt=86.6s  terminais={'timeout': 80, 'escape': 2, 'collision': 18}
+[gen 121] α=3.95  best= +94.43  avg= -41.95  mut=0.028  dt=221.3s  terminais={'timeout': 83, 'collision': 12, 'escape': 5}
+[gen 122] α=4.20  best=+308.64  avg= -34.54  mut=0.027  dt=269.5s  terminais={'timeout': 84, 'escape': 8, 'collision': 7, 'success': 1}
+[gen 123] α=4.40  best= +64.89  avg= -43.69  mut=0.027  dt=284.0s  terminais={'timeout': 85, 'collision': 11, 'escape': 4}
+[gen 124] α=2.87  best= -10.94  avg= -48.46  mut=0.027  dt=140.0s  terminais={'timeout': 77, 'collision': 20, 'escape': 3}
+[gen 125] α=2.42  best= -22.63  avg= -49.77  mut=0.026  dt=110.4s  terminais={'timeout': 76, 'collision': 23, 'escape': 1}
+[gen 126] α=2.21  best= +19.96  avg= -46.88  mut=0.026  dt=76.4s  terminais={'timeout': 77, 'collision': 23}
+[gen 127] α=2.02  best= -30.05  avg= -53.07  mut=0.026  dt=76.5s  terminais={'timeout': 71, 'collision': 28, 'escape': 1}
+[gen 128] α=1.66  best= +22.30  avg= -54.61  mut=0.026  dt=46.2s  terminais={'timeout': 65, 'collision': 35}
+[gen 129] α=4.61  best=+100.62  avg= -39.27  mut=0.025  dt=313.9s  terminais={'timeout': 84, 'collision': 7, 'escape': 9}
+[gen 130] α=1.58  best= +15.39  avg= -50.74  mut=0.025  dt=48.4s  terminais={'timeout': 72, 'collision': 28}
+[gen 131] α=3.16  best=  +7.84  avg= -43.77  mut=0.025  dt=145.1s  terminais={'timeout': 82, 'collision': 15, 'escape': 3}
+[gen 132] α=2.85  best=  +8.87  avg= -51.92  mut=0.025  dt=103.8s  terminais={'collision': 25, 'timeout': 72, 'escape': 3}
+[gen 133] α=1.83  best=+185.40  avg= -47.76  mut=0.024  dt=54.1s  terminais={'collision': 26, 'timeout': 73, 'success': 1}
+[gen 134] α=2.51  best= -25.39  avg= -53.66  mut=0.024  dt=87.7s  terminais={'timeout': 71, 'collision': 29}
+[gen 135] α=1.93  best=  -4.25  avg= -49.55  mut=0.024  dt=75.2s  terminais={'timeout': 75, 'collision': 25}
+[gen 136] α=3.80  best= +74.02  avg= -42.52  mut=0.023  dt=242.3s  terminais={'collision': 11, 'timeout': 87, 'escape': 2}
+[gen 137] α=1.61  best= -20.97  avg= -54.57  mut=0.023  dt=48.2s  terminais={'collision': 32, 'timeout': 68}
+[gen 138] α=2.09  best= +11.70  avg= -50.48  mut=0.023  dt=80.4s  terminais={'timeout': 74, 'collision': 26}
+[gen 139] α=3.63  best= +52.72  avg= -45.81  mut=0.023  dt=181.3s  terminais={'timeout': 81, 'collision': 17, 'escape': 2}
+[gen 140] α=4.77  best=+385.58  avg= -37.70  mut=0.022  dt=279.2s  terminais={'escape': 4, 'timeout': 84, 'collision': 12}
+[gen 141] α=4.57  best=+119.51  avg= -41.27  mut=0.022  dt=260.4s  terminais={'timeout': 84, 'escape': 7, 'collision': 9}
+[gen 142] α=4.23  best= -22.40  avg= -44.99  mut=0.022  dt=234.8s  terminais={'timeout': 82, 'escape': 6, 'collision': 12}
+[gen 143] α=2.84  best=+228.37  avg= -39.02  mut=0.022  dt=132.3s  terminais={'escape': 5, 'timeout': 83, 'collision': 11, 'success': 1}
+[gen 144] α=1.62  best=  -6.32  avg= -50.44  mut=0.021  dt=44.5s  terminais={'timeout': 73, 'collision': 27}
+[gen 145] α=1.90  best=+124.04  avg= -44.43  mut=0.021  dt=69.2s  terminais={'timeout': 78, 'collision': 22}
+[gen 146] α=4.33  best= +77.25  avg= -42.87  mut=0.021  dt=235.8s  terminais={'collision': 13, 'timeout': 82, 'escape': 5}
+[gen 147] α=4.42  best=+105.72  avg= -39.99  mut=0.021  dt=254.3s  terminais={'timeout': 86, 'escape': 8, 'collision': 6}
+[gen 148] α=4.80  best= -31.11  avg= -44.34  mut=0.020  dt=295.2s  terminais={'timeout': 81, 'escape': 11, 'collision': 8}
+[gen 149] α=2.46  best= -21.27  avg= -52.59  mut=0.020  dt=92.1s  terminais={'timeout': 73, 'collision': 27}
+[save] melhor rede global: fitness +385.58 (gen 140) em checkpoints\best_ever.pt

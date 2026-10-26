@@ -400,8 +400,6 @@ class Experimenter(Application):
         """
         if out is None:
             out = [0.0] * 9
-        if rocket is None or host is None:
-            return None
         if not rocket.active or not host.active:
             return None
 
