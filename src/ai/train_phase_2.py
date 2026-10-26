@@ -52,7 +52,7 @@ class OrbitRaiseTrainer(Application):
     _HOST_RADIUS_RANGE = (500.0, 540.0)
 
     # --- Currículo de α
-    _ALPHA_MIN = 1.5
+    _ALPHA_MIN = 2.0  # ↑ de 1.5 — Fase 2 é "subir", não repetir
     _ALPHA_MAX_START = 2.5
     _ALPHA_MAX_END = 4.0
 
@@ -60,35 +60,38 @@ class OrbitRaiseTrainer(Application):
     _STABLE_R_BAND = 0.12
     _STABLE_V_BAND = 0.20
 
-    # --- Sucesso: 2π acumulados ininterruptamente em banda
     _SUCCESS_ANGLE = 2.0 * math.pi
 
     # --- Limites
-    _ESCAPE_R_FACTOR = 8.0
+    _ESCAPE_R_FACTOR = 3.0  # ↓ de 8.0 — pega runaway cedo
 
-    # --- Shaping
-    _PHI_R_SCALE = 20.0
-    _PHI_VR_SCALE = 10.0
-    _PHI_VT_SCALE = 20.0
+    # --- Marco de desacoplagem (preserva o skill da Fase 1)
+    _UNDOCK_R_FACTOR = 1.5  # mesmo limiar da Fase 1
+    _UNDOCK_BONUS = 50.0  # +50 uma vez ao cruzar r=1.5·R
+
+    # --- Shaping (×3 — dá gradiente forte rumo à banda)
+    _PHI_R_SCALE = 60.0
+    _PHI_VR_SCALE = 30.0
+    _PHI_VT_SCALE = 60.0
     _PHI_CAP = 1.0
 
     # --- Bônus densos
-    _C_IN_BAND = 0.05
+    _C_IN_BAND = 0.20  # ↑ de 0.05
     _BONUS_QUARTER_ORBIT = 20.0
     _BONUS_HALF_ORBIT = 40.0
 
-    # --- Custos densos
-    _C_THRUST = 0.03
-    _C_ROTATE = 0.003
-    _C_TIME = 0.001
+    # --- Custos densos (÷6 a ÷10 — empuxo deixa de dominar)
+    _C_THRUST = 0.005  # ↓ de 0.03
+    _C_ROTATE = 0.001  # ↓ de 0.003
+    _C_TIME = 0.0002  # ↓ de 0.001
 
-    # --- Terminais
+    # --- Terminais (timeout PIOR que qualquer falha ativa)
     _TERMINAL_SUCCESS = +300.0
     _TERMINAL_CRASH = -100.0
-    _TERMINAL_REDOCKED = -60.0
-    _TERMINAL_ESCAPE = -50.0
+    _TERMINAL_REDOCKED = -50.0
+    _TERMINAL_ESCAPE = -40.0  # ↓ de -50
     _TERMINAL_FUEL = -30.0
-    _TERMINAL_TIMEOUT = -40.0
+    _TERMINAL_TIMEOUT = -100.0  # ↓ de -40
 
     # --- Bônus de eficiência
     _FUEL_BONUS_SCALE = 80.0
@@ -140,6 +143,7 @@ class OrbitRaiseTrainer(Application):
         self.quarter_awarded: list[bool] = []
         self.half_awarded: list[bool] = []
         self.in_band_steps: list[int] = []
+        self.undock_awarded: list[bool] = []
         self._r_ref: list[float] = []
         self._v_ref: list[float] = []
         self._episode_step = 0
@@ -265,7 +269,8 @@ class OrbitRaiseTrainer(Application):
         self.quarter_awarded = [False] * n
         self.half_awarded = [False] * n
         self.in_band_steps = [0] * n
-        self._episode_success_fuel = []
+        self.undock_awarded: list[bool] = []
+        self.undock_awarded = [False] * n
         self._episode_success_time = []
         self._episode_success_band = []
 
@@ -584,7 +589,11 @@ class OrbitRaiseTrainer(Application):
 
         if rocket.docked_to is None:
             self.ever_undocked[i] = True
-        if not self.undock_ok[i] and r >= self._ALPHA_MIN * host.radius:
+
+        if not self.undock_awarded[i] and r >= self._UNDOCK_R_FACTOR * host.radius:
+            self.undock_awarded[i] = True
+            self.rewards[i] += self._UNDOCK_BONUS
+        if not self.undock_ok[i] and r >= self._UNDOCK_R_FACTOR * host.radius:
             self.undock_ok[i] = True
 
         # In-band
@@ -918,7 +927,7 @@ def load_population_from_phase1(
     size: int,
     seed: int,
     elite_count: int = 5,
-    diversity_std: float = 0.02,
+    diversity_std: float = 0.01,
 ) -> NeuralPopulation:
     """@brief População warm-start a partir do checkpoint da Fase 1.
 
