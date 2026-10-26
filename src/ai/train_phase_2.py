@@ -3,20 +3,15 @@
 Herda a habilidade de desacoplar da Fase 1 via warm-start. Cada
 episódio começa acoplado e tem α sorteado no range do currículo.
 
-Meta: completar 2π dentro da banda estável (`r_ref ± 12%`,
-`v_r/v_ref < 0.20`, `|v_t/v_ref - 1| < 0.20`).
-
-Estrutura de recompensa (escada de milestones):
-  +20  T1: r ≥ 1.5·R (undock, igual à Fase 1)
-  +30  T2: entra na r-band (12%)
-  +50  T3: r-band + v-band (órbita circularizada)
-  +50  T4: 90° em banda
-  +100 T5: 180° em banda
-  +200 T6: 360° em banda → terminal, fim do episódio
-
-Terminais: escape = -500 (catastrófico), timeout = -50 (mild).
-Densos: +0.05/passo em banda cheia, +0.02/passo em posição
-       (crédito mínimo para não farmar "dwell sem velocidade").
+Estrutura de recompensa:
+- Milestones grandes e positivos empurram o GA para frente. Sem eles,
+  o "sit still" (timeout) e o "spin out" (escape) são atratores
+  locais que dominam a população em poucas gerações.
+- Escape é punido (-180), mas **não catastrófico**. Punir com -500
+  fazia a rede preferir *não tentar* (-200 docked timeout era
+  melhor que -450 escape).
+- `docked_timeout = -200` força a rede a desacoplar. Sem isso,
+  "ficar parado" vencia "tentar e falhar".
 """
 
 import json
@@ -58,14 +53,13 @@ class OrbitRaiseTrainer(Application):
     _HOST_MASS_RANGE = (400_000.0, 700_000.0)
     _HOST_RADIUS_RANGE = (500.0, 540.0)
 
-    # α_min = 1.5 preserva o alvo da Fase 1 (a política herdada ainda
-    # é útil aqui). α_max cresce devagar: 1.7 → 2.5. Alvos altos são
-    # adiados para quando a rede souber circularizar.
+    # α range mais estreito acelera o currículo. 1.5 preserva o alvo
+    # da Fase 1 (política herdada continua útil). Topo em 2.2 (era
+    # 2.5) porque α alto multiplica a dificuldade do controle.
     _ALPHA_MIN = 1.5
     _ALPHA_MAX_START = 1.7
-    _ALPHA_MAX_END = 2.5
+    _ALPHA_MAX_END = 2.2
 
-    # Banda estável — DESIGN §7.
     _STABLE_R_BAND = 0.12
     _STABLE_V_BAND = 0.20
 
@@ -74,54 +68,54 @@ class OrbitRaiseTrainer(Application):
     _ESCAPE_R_FACTOR = 3.0
     _UNDOCK_R_FACTOR = 1.5
 
-    # --- Escada de milestones (cada um dispara uma vez por episódio).
-    _MILESTONE_UNDOCK = 20.0
-    _MILESTONE_POSITION = 30.0
-    _MILESTONE_VELOCITY = 50.0
-    _MILESTONE_QUARTER = 50.0
-    _MILESTONE_HALF = 100.0
+    # Milestones cumulativos (cada um dispara uma vez por episódio).
+    # A soma `_MILESTONE_UNDOCK` + ... + `_TERMINAL_SUCCESS` é ~890.
+    # Isso dá escada de 1090 pontos entre "docked" (-200) e "orbit"
+    # (+890), com cada degrau intermediário claramente distinguível.
+    _MILESTONE_UNDOCK = 150.0
+    _MILESTONE_APPROACH = 40.0
+    _MILESTONE_POSITION = 100.0
+    _MILESTONE_VELOCITY = 120.0
+    _MILESTONE_QUARTER = 60.0
+    _MILESTONE_HALF = 120.0
 
-    # --- Shaping (Φ). Telescopa, então não enviesa o ótimo — só
-    # torna o gradiente visível entre "subiu reto" e "subiu virando".
-    _PHI_R_SCALE = 40.0
-    _PHI_VR_SCALE = 20.0
-    _PHI_VT_SCALE = 40.0
+    # Zona "approaching": entre o undock e a banda de posição, dá
+    # um alvo intermediário barato. `|v_r|` baixo incentiva frear
+    # cedo em vez de thrustar até passar de r_ref.
+    _APPROACH_R_MIN = 1.2
+    _APPROACH_R_MAX_FRAC = 0.95
+
+    # Shaping. Φ_VR alto (60) é o que ensina "subir suavemente" —
+    # |v_r| alto perto de r_ref é caro, forçando coast-and-brake
+    # em vez de thrust-and-pray.
+    _PHI_R_SCALE = 60.0
+    _PHI_VR_SCALE = 60.0
+    _PHI_VT_SCALE = 50.0
     _PHI_CAP = 1.0
 
-    # --- Bônus densos.
-    # `_C_IN_BAND` é o sinal de "estou mantendo" — pequeno porque os
-    # milestones já pagam. `_C_IN_POSITION` é mínimo, só para não
-    # deixar o GA cego entre "nunca chega" e "chegou errado".
-    _C_IN_BAND = 0.05
-    _C_IN_POSITION = 0.02
+    _C_IN_BAND = 0.08
+    _C_IN_POSITION = 0.03
 
-    # --- Custos densos.
     _C_THRUST = 0.005
     _C_ROTATE = 0.001
     _C_TIME = 0.0002
 
-    # --- Terminais. Escape é *catastrófico*: -500 vs -50 do timeout.
-    # A política da Fase 1 (thrust até escapar) passa de -90 para
-    # -430 — pior que qualquer coisa que o GA possa alcançar ficando
-    # parado. Isso destrói o atrator "spin out".
-    _TERMINAL_SUCCESS = +200.0
+    # Terminais. `docked_timeout` é o pior — o GA precisa aprender
+    # que "não tentar" é pior que "tentar e escapar".
+    _TERMINAL_SUCCESS = +300.0
     _TERMINAL_CRASH = -100.0
-    _TERMINAL_REDOCKED = -50.0
-    _TERMINAL_ESCAPE = -500.0
+    _TERMINAL_REDOCKED = -30.0
+    _TERMINAL_ESCAPE = -180.0
     _TERMINAL_FUEL = -80.0
-    _TERMINAL_TIMEOUT = -50.0
+    _TERMINAL_TIMEOUT = -80.0
+    _TERMINAL_DOCKED_TIMEOUT = -200.0
 
-    # --- Bônus de eficiência no sucesso.
     _FUEL_BONUS_SCALE = 60.0
     _TIME_BONUS_SCALE = 30.0
 
-    # --- Timeout: 3 períodos orbitais no α do episódio, com hard cap.
-    # Em α=2.5 (r_ref ≈ 1375), T_orb ≈ 5,300 steps; 3× = 16k, capado
-    # em 10k → 1.9 órbitas, suficiente para o sucesso (2π).
     _TIMEOUT_ORBITS = 3.0
     _MAX_EPISODE_STEPS = 10_000
 
-    # --- Currículo.
     _TOURNAMENT_SIZE = 3
     _SELECTION_W_BEST = 1.0
     _SELECTION_W_AVG = 1.0
@@ -147,7 +141,7 @@ class OrbitRaiseTrainer(Application):
         @param max_generations Total de gerações.
         @param episodes_per_gen Episódios por rede por geração.
         @param method "sexual" ou "asexual".
-        @param elite_count Indivíduos preservados intactos — 15%
+        @param elite_count Indivíduos preservados intactos — 15
             preserva o skill da Fase 1 contra drift genético.
         @param mutation_rate_start Taxa de mutação na geração 0.
         @param mutation_rate_end Taxa de mutação na última geração.
@@ -178,8 +172,8 @@ class OrbitRaiseTrainer(Application):
         self.prev_angle: list[Optional[float]] = []
         self.theta_accum: list[float] = []
 
-        # Bandeiras de milestone (resetadas por episódio).
         self.awarded_undock: list[bool] = []
+        self.awarded_approach: list[bool] = []
         self.awarded_position: list[bool] = []
         self.awarded_velocity: list[bool] = []
         self.awarded_quarter: list[bool] = []
@@ -303,6 +297,7 @@ class OrbitRaiseTrainer(Application):
         self.theta_accum = [0.0] * n
 
         self.awarded_undock = [False] * n
+        self.awarded_approach = [False] * n
         self.awarded_position = [False] * n
         self.awarded_velocity = [False] * n
         self.awarded_quarter = [False] * n
@@ -323,7 +318,6 @@ class OrbitRaiseTrainer(Application):
             self._r_ref = [r_ref] * n
             self._v_ref = [v_ref] * n
 
-            # Timeout = 3·T_orb(r_ref), capado em `_MAX_EPISODE_STEPS`.
             T_orb = 2.0 * math.pi * math.sqrt(r_ref ** 3 / mu)
             steps_for_orbits = int(
                 self._TIMEOUT_ORBITS * T_orb / self.config.fixed_timestep
@@ -396,8 +390,6 @@ class OrbitRaiseTrainer(Application):
             self._best_fitness_ever = best
             self._best_fitness_gen = self.generation
 
-        # Salva o melhor indivíduo da geração com maior `best + avg`.
-        # O recorde absoluto pode ser um "lucky outlier" de geração ruim.
         if (composite > self._best_composite_score
                 and self.population is not None and fitness):
             self._best_composite_score = composite
@@ -579,18 +571,13 @@ class OrbitRaiseTrainer(Application):
     def _apply_network_action(
         self, rocket: Rocket, network, obs: list[float],
     ) -> None:
-        """@brief Fast path de `control_with_network` para o hot loop.
-
-        @details Dispensa validações de contrato e usa
-        `inference_mode` (mais rápido que `no_grad`, pois não rastreia
-        version-counter nem views).
-        """
+        """@brief Fast path de `control_with_network` para o hot loop."""
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
         with torch.inference_mode():
             actions, _, _ = network.select_action(
                 obs_tensor, deterministic=True
             )
-        action = int(actions.item())
+        action = int(actions.items()) if False else int(actions.item())
         rotation_input, thrusting = Rocket.AI_ACTIONS[action]
         rocket.set_control(rotation_input, thrusting)
 
@@ -624,12 +611,11 @@ class OrbitRaiseTrainer(Application):
     def _update_reward_for(self, i: int) -> None:
         """@brief Recompensa, milestones e terminais do foguete `i`.
 
-        @details Ordem: shaping → custos → milestones (undock,
-        position, velocity, quarter, half) → sucesso → terminais de
-        falha. Cada milestone dispara **uma vez por episódio** e paga
-        um valor crescente; a escada inteira tem 550 pontos de
-        amplitude, dando ao GA gradiente para progredir em vez de
-        estacionar no primeiro degrau.
+        @details Ordem: shaping → custos → milestones → terminais.
+        Cada milestone dispara **uma vez por episódio**. A escada
+        (undock + approach + position + velocity + quarter + half +
+        success) dá ao GA gradiente para progredir em vez de
+        estacionar em "não thrustar" ou "escapar".
         """
         rocket = self.rockets[i]
         host = self.host
@@ -639,8 +625,6 @@ class OrbitRaiseTrainer(Application):
         dx = rocket.position.x - host.position.x
         dy = rocket.position.y - host.position.y
         r_sq = dx * dx + dy * dy
-        # Estado degenerado (r ≈ 0): sem isso, divisões por zero nos
-        # passos seguintes. Trata como crash.
         if r_sq <= 1e-24:
             self.alive[i] = False
             self.terminal_reasons[i] = "crash"
@@ -657,12 +641,10 @@ class OrbitRaiseTrainer(Application):
         r_ref = self._r_ref[i]
         v_ref = self._v_ref[i]
 
-        # --- Shaping (telescopa; não enviesa o ótimo).
         new_phi = self._potential(r, v_r, v_t_abs, r_ref, v_ref)
         self.rewards[i] += new_phi - self.prev_phi[i]
         self.prev_phi[i] = new_phi
 
-        # --- Custos densos.
         self.rewards[i] -= self._C_THRUST if rocket.thrusting else 0.0
         self.rewards[i] -= self._C_ROTATE * abs(rocket.rotation_input)
         self.rewards[i] -= self._C_TIME
@@ -677,7 +659,14 @@ class OrbitRaiseTrainer(Application):
             self.undock_ok[i] = True
             self.rewards[i] += self._MILESTONE_UNDOCK
 
-        # --- Bandeiras de banda.
+        # --- Milestone T2: approach (transição para r_ref).
+        if (self.ever_undocked[i]
+                and not self.awarded_approach[i]
+                and r >= self._APPROACH_R_MIN * host.radius
+                and r < self._APPROACH_R_MAX_FRAC * r_ref):
+            self.awarded_approach[i] = True
+            self.rewards[i] += self._MILESTONE_APPROACH
+
         in_position = (
             r_ref > 0.0 and abs(r / r_ref - 1.0) < self._STABLE_R_BAND
         )
@@ -688,19 +677,16 @@ class OrbitRaiseTrainer(Application):
         )
         in_band = in_position and in_velocity
 
-        # --- Milestone T2: posição.
+        # --- Milestone T3: position.
         if in_position and not self.awarded_position[i]:
             self.awarded_position[i] = True
             self.rewards[i] += self._MILESTONE_POSITION
 
-        # --- Milestone T3: velocidade (circularizada).
+        # --- Milestone T4: velocity (orbit-shaped).
         if in_band and not self.awarded_velocity[i]:
             self.awarded_velocity[i] = True
             self.rewards[i] += self._MILESTONE_VELOCITY
 
-        # --- Progresso angular (medido em TODO passo, acumulado só
-        # em banda). `delta` é o deslocamento angular desde o último
-        # passo, normalizado a (-π, π].
         angle = math.atan2(dy, dx)
         prev = self.prev_angle[i]
         if prev is not None:
@@ -717,7 +703,6 @@ class OrbitRaiseTrainer(Application):
             self.in_band_steps[i] += 1
             self.theta_accum[i] += delta
 
-            # --- Milestones T4 e T5 (90° e 180° em banda).
             if (not self.awarded_quarter[i]
                     and abs(self.theta_accum[i]) >= math.pi / 2):
                 self.awarded_quarter[i] = True
@@ -727,8 +712,6 @@ class OrbitRaiseTrainer(Application):
                 self.awarded_half[i] = True
                 self.rewards[i] += self._MILESTONE_HALF
         else:
-            # Sair da banda zera o progresso angular — evita "colar
-            # por um instante, sair, voltar e somar 2π picado".
             self.theta_accum[i] = 0.0
 
         # --- Terminais.
@@ -736,7 +719,6 @@ class OrbitRaiseTrainer(Application):
         reason: Optional[str] = None
         s_fuel = s_time = s_band = None
 
-        # --- Sucesso (T6): 2π em banda.
         if in_band and abs(self.theta_accum[i]) >= self._SUCCESS_ANGLE:
             fuel_frac = (
                 rocket.fuel / rocket.fuel_max
@@ -756,9 +738,6 @@ class OrbitRaiseTrainer(Application):
             s_fuel, s_time, s_band = fuel_frac, time_frac, band_frac
 
         if terminal is None:
-            # `collides` sem gate de `ever_undocked`: só a rotação do
-            # bico pode sobrepor com o foguete acoplado — crash, não
-            # repouso. Sem isso, "girar em solo" ficava livre.
             if collides(host, rocket):
                 speed = (host.velocity - rocket.velocity).length()
                 if not self.ever_undocked[i]:
@@ -768,14 +747,16 @@ class OrbitRaiseTrainer(Application):
                 else:
                     terminal, reason = self._TERMINAL_REDOCKED, "fell_back"
             elif r > self._ESCAPE_R_FACTOR * r_ref:
-                # Catastrófico: -500. A política herdada ("thrust até
-                # escapar") cai de -90 para -430; ela nunca mais
-                # vence o "sit still" (-50).
                 terminal, reason = self._TERMINAL_ESCAPE, "escape"
             elif rocket.fuel <= 0.0:
                 terminal, reason = self._TERMINAL_FUEL, "fuel"
             elif self.steps[i] >= self._episode_max_steps:
-                terminal, reason = self._TERMINAL_TIMEOUT, "timeout"
+                if not self.ever_undocked[i]:
+                    terminal = self._TERMINAL_DOCKED_TIMEOUT
+                    reason = "docked_timeout"
+                else:
+                    terminal = self._TERMINAL_TIMEOUT
+                    reason = "timeout"
 
         if terminal is not None:
             self.rewards[i] += terminal
@@ -822,12 +803,19 @@ class OrbitRaiseTrainer(Application):
             or host is None
             or not host.active
         ):
+            # Aplicar timeout (ou docked_timeout) aos sobreviventes.
+            # A distinção é crucial: "nunca tentei" é o pior desfecho.
             for i in range(len(self.alive)):
                 if self.alive[i]:
-                    self.rewards[i] += self._TERMINAL_TIMEOUT
+                    if not self.ever_undocked[i]:
+                        self.rewards[i] += self._TERMINAL_DOCKED_TIMEOUT
+                        if self.terminal_reasons[i] is None:
+                            self.terminal_reasons[i] = "docked_timeout"
+                    else:
+                        self.rewards[i] += self._TERMINAL_TIMEOUT
+                        if self.terminal_reasons[i] is None:
+                            self.terminal_reasons[i] = "timeout"
                     self.alive[i] = False
-                    if self.terminal_reasons[i] is None:
-                        self.terminal_reasons[i] = "timeout"
             self._end_episode()
             return
 
@@ -835,11 +823,7 @@ class OrbitRaiseTrainer(Application):
         self.world.purge_inactive()
 
     def _resolve_merges(self) -> None:
-        """@brief Funde o host com foguetes em colisão destrutiva.
-
-        @details Contato abaixo de `merge_min_relative_speed` é
-        ignorado — é o que permite o foguete pousar sem ser absorvido.
-        """
+        """@brief Funde o host com foguetes em colisão destrutiva."""
         host = self.host
         if host is None or not host.active:
             return
@@ -1040,16 +1024,14 @@ def load_population_from_phase1(
 ) -> NeuralPopulation:
     """@brief População warm-start a partir de um checkpoint `.pt`.
 
-    @details Os `elite_count` primeiros carregam os pesos exatos (skill
-    preservado); os demais recebem os mesmos pesos + ruído
-    N(0, diversity_std²) por parâmetro — diversidade sem destruir a
-    política-base.
+    @details Os `elite_count` primeiros carregam os pesos exatos
+    (skill preservado); os demais recebem os mesmos pesos + ruído
+    N(0, diversity_std²) por parâmetro.
 
     @param checkpoint_path Caminho do `.pt`.
     @param size Tamanho da população.
     @param seed Semente mestra (e do gerador de ruído).
-    @param elite_count Indivíduos com pesos intactos. `15` preserva
-        15% da população como âncora anti-forgetting.
+    @param elite_count Indivíduos com pesos intactos.
     @param diversity_std Desvio-padrão do ruído por parâmetro.
     @return População pronta para treino.
     """
