@@ -1,0 +1,56 @@
+[gen   0] best=+271.77  avg= +41.08  comp=+312.85  succ=29%  align=0.73  fuel=0.93  mut=0.050  dt=14.7s  term={'timeout': 81, 'success': 88, 'crash_docked': 68, 'fell_back': 23, 'escape': 31, 'crash': 9}
+[gen   1] best=+271.55  avg= +47.94  comp=+319.50  succ=31%  align=0.80  fuel=0.93  mut=0.049  dt=10.6s  term={'success': 93, 'crash_docked': 36, 'crash': 11, 'timeout': 85, 'fell_back': 52, 'escape': 23}
+[gen   2] best=+271.84  avg= +81.76  comp=+353.60  succ=41%  align=0.79  fuel=0.93  mut=0.048  dt=10.3s  term={'success': 124, 'escape': 32, 'crash_docked': 42, 'timeout': 66, 'fell_back': 22, 'crash': 14}
+[gen   3] best=+271.03  avg= +69.64  comp=+340.67  succ=38%  align=0.80  fuel=0.93  mut=0.048  dt=10.7s  term={'success': 113, 'timeout': 76, 'fell_back': 35, 'escape': 34, 'crash_docked': 37, 'crash': 5}
+[gen   4] best=+271.61  avg= +86.35  comp=+357.96  succ=43%  align=0.80  fuel=0.93  mut=0.047  dt=10.3s  term={'success': 130, 'crash_docked': 40, 'escape': 27, 'fell_back': 19, 'timeout': 65, 'crash': 19}
+[gen   5] best=+274.14  avg= +82.32  comp=+356.46  succ=42%  align=0.76  fuel=0.94  mut=0.046  dt=9.3s  term={'success': 125, 'crash_docked': 29, 'fell_back': 48, 'crash': 19, 'timeout': 33, 'escape': 46}
+[gen   6] best=+272.14  avg= +75.58  comp=+347.72  succ=40%  align=0.79  fuel=0.93  mut=0.045  dt=9.1s  term={'success': 119, 'timeout': 44, 'crash_docked': 34, 'escape': 38, 'fell_back': 55, 'crash': 10}
+[gen   7] best=+273.01  avg=+100.72  comp=+373.73  succ=48%  align=0.78  fuel=0.93  mut=0.044  dt=7.9s  term={'success': 143, 'fell_back': 57, 'crash_docked': 27, 'escape': 24, 'timeout': 33, 'crash': 16}
+[gen   8] best=+274.04  avg=+135.81  comp=+409.86  succ=58%  align=0.78  fuel=0.94  mut=0.043  dt=8.4s  term={'success': 175, 'timeout': 35, 'crash_docked': 38, 'escape': 14, 'crash': 11, 'fell_back': 27}
+[gen   9] best=+271.61  avg= +99.87  comp=+371.48  succ=47%  align=0.84  fuel=0.93  mut=0.043  dt=8.5s  term={'success': 141, 'timeout': 44, 'fell_back': 36, 'escape': 26, 'crash': 20, 'crash_docked': 33}
+[gen  10] best=+273.29  avg=+148.38  comp=+421.66  succ=62%  align=0.79  fuel=0.93  mut=0.042  dt=8.9s  term={'success': 187, 'timeout': 38, 'crash': 8, 'escape': 30, 'crash_docked': 16, 'fell_back': 21}
+[gen  11] best=+272.57  avg=+147.78  comp=+420.35  succ=62%  align=0.83  fuel=0.93  mut=0.041  dt=7.4s  term={'success': 186, 'fell_back': 41, 'crash_docked': 24, 'timeout': 28, 'crash': 10, 'escape': 11}
+[gen  12] best=+272.91  avg=+156.81  comp=+429.73  succ=65%  align=0.81  fuel=0.93  mut=0.040  dt=7.2s  term={'success': 194, 'fell_back': 26, 'crash': 22, 'timeout': 16, 'escape': 20, 'crash_docked': 22}
+[gen  13] best=+273.50  avg=+168.98  comp=+442.47  succ=69%  align=0.80  fuel=0.93  mut=0.039  dt=7.6s  term={'success': 206, 'crash': 10, 'crash_docked': 12, 'fell_back': 36, 'timeout': 24, 'escape': 12}
+[gen  14] best=+272.25  avg=+190.58  comp=+462.83  succ=75%  align=0.84  fuel=0.93  mut=0.039  dt=6.7s  term={'success': 226, 'crash_docked': 33, 'timeout': 9, 'crash': 12, 'escape': 13, 'fell_back': 7}
+[gen  15] best=+274.12  avg=+162.29  comp=+436.40  succ=66%  align=0.79  fuel=0.94  mut=0.038  dt=8.0s  term={'success': 199, 'timeout': 26, 'fell_back': 21, 'crash_docked': 19, 'escape': 25, 'crash': 10}
+[gen  16] best=+273.96  avg=+190.84  comp=+464.81  succ=76%  align=0.79  fuel=0.93  mut=0.037  dt=7.2s  term={'success': 227, 'fell_back': 16, 'escape': 12, 'crash_docked': 16, 'timeout': 18, 'crash': 11}
+[gen  17] best=+271.32  avg=+199.47  comp=+470.79  succ=78%  align=0.87  fuel=0.93  mut=0.036  dt=7.0s  term={'success': 235, 'timeout': 24, 'crash': 14, 'fell_back': 21, 'crash_docked': 6}
+[gen  18] best=+274.13  avg=+202.41  comp=+476.53  succ=79%  align=0.82  fuel=0.94  mut=0.035  dt=7.3s  term={'success': 236, 'timeout': 25, 'crash_docked': 18, 'crash': 5, 'fell_back': 7, 'escape': 9}
+[gen  19] best=+273.16  avg=+193.22  comp=+466.38  succ=76%  align=0.83  fuel=0.93  mut=0.034  dt=7.4s  term={'success': 228, 'crash': 8, 'timeout': 31, 'crash_docked': 12, 'fell_back': 12, 'escape': 9}
+[gen  20] best=+271.72  avg=+195.99  comp=+467.71  succ=77%  align=0.84  fuel=0.93  mut=0.034  dt=7.1s  term={'success': 232, 'timeout': 20, 'fell_back': 18, 'crash_docked': 10, 'escape': 9, 'crash': 11}
+[gen  21] best=+272.27  avg=+216.86  comp=+489.13  succ=83%  align=0.86  fuel=0.93  mut=0.033  dt=6.7s  term={'success': 250, 'crash': 9, 'escape': 9, 'timeout': 14, 'fell_back': 12, 'crash_docked': 6}
+[gen  22] best=+272.97  avg=+190.75  comp=+463.71  succ=75%  align=0.85  fuel=0.93  mut=0.032  dt=7.6s  term={'success': 225, 'timeout': 21, 'escape': 24, 'crash': 12, 'fell_back': 15, 'crash_docked': 3}
+[gen  23] best=+272.96  avg=+238.89  comp=+511.85  succ=90%  align=0.83  fuel=0.93  mut=0.031  dt=6.0s  term={'success': 271, 'escape': 3, 'crash': 11, 'fell_back': 9, 'timeout': 3, 'crash_docked': 3}
+[gen  24] best=+271.60  avg=+210.35  comp=+481.95  succ=81%  align=0.86  fuel=0.93  mut=0.030  dt=6.7s  term={'success': 244, 'escape': 19, 'fell_back': 18, 'crash': 9, 'timeout': 10}
+[gen  25] best=+271.48  avg=+230.79  comp=+502.27  succ=88%  align=0.87  fuel=0.93  mut=0.030  dt=6.2s  term={'success': 263, 'fell_back': 12, 'timeout': 9, 'escape': 9, 'crash': 4, 'crash_docked': 3}
+[gen  26] best=+273.41  avg=+249.62  comp=+523.03  succ=93%  align=0.84  fuel=0.94  mut=0.029  dt=5.7s  term={'success': 280, 'crash': 6, 'crash_docked': 6, 'fell_back': 5, 'timeout': 3}
+[gen  27] best=+271.54  avg=+239.42  comp=+510.96  succ=91%  align=0.86  fuel=0.93  mut=0.028  dt=6.7s  term={'success': 272, 'fell_back': 5, 'timeout': 12, 'escape': 9, 'crash': 2}
+[gen  28] best=+272.45  avg=+258.38  comp=+530.83  succ=96%  align=0.85  fuel=0.93  mut=0.027  dt=5.4s  term={'success': 289, 'escape': 5, 'fell_back': 3, 'crash': 3}
+[gen  29] best=+273.33  avg=+229.10  comp=+502.43  succ=87%  align=0.85  fuel=0.93  mut=0.026  dt=6.0s  term={'success': 261, 'fell_back': 9, 'crash': 12, 'timeout': 6, 'crash_docked': 9, 'escape': 3}
+[gen  30] best=+273.10  avg=+236.18  comp=+509.28  succ=89%  align=0.85  fuel=0.93  mut=0.026  dt=6.3s  term={'success': 268, 'fell_back': 6, 'crash_docked': 6, 'escape': 6, 'crash': 6, 'timeout': 8}
+[gen  31] best=+273.12  avg=+244.51  comp=+517.63  succ=92%  align=0.84  fuel=0.93  mut=0.025  dt=6.3s  term={'success': 276, 'crash_docked': 6, 'timeout': 4, 'crash': 6, 'escape': 5, 'fell_back': 3}
+[gen  32] best=+273.45  avg=+240.49  comp=+513.94  succ=91%  align=0.83  fuel=0.93  mut=0.024  dt=6.2s  term={'success': 272, 'fell_back': 13, 'escape': 7, 'timeout': 7, 'crash': 1}
+[gen  33] best=+272.28  avg=+247.65  comp=+519.93  succ=93%  align=0.87  fuel=0.93  mut=0.023  dt=6.2s  term={'success': 279, 'fell_back': 8, 'timeout': 10, 'escape': 2, 'crash': 1}
+[gen  34] best=+272.99  avg=+247.79  comp=+520.78  succ=93%  align=0.86  fuel=0.93  mut=0.022  dt=5.7s  term={'success': 278, 'escape': 7, 'fell_back': 10, 'crash': 4, 'timeout': 1}
+[gen  35] best=+273.35  avg=+251.64  comp=+524.99  succ=94%  align=0.84  fuel=0.94  mut=0.021  dt=5.2s  term={'success': 282, 'fell_back': 12, 'crash': 5, 'timeout': 1}
+[gen  36] best=+271.40  avg=+246.97  comp=+518.38  succ=93%  align=0.90  fuel=0.93  mut=0.021  dt=6.4s  term={'success': 278, 'fell_back': 9, 'crash': 3, 'timeout': 9, 'escape': 1}
+[gen  37] best=+271.98  avg=+259.76  comp=+531.73  succ=97%  align=0.87  fuel=0.93  mut=0.020  dt=5.3s  term={'success': 290, 'fell_back': 6, 'crash': 1, 'escape': 3}
+[gen  38] best=+273.00  avg=+247.86  comp=+520.86  succ=93%  align=0.85  fuel=0.93  mut=0.019  dt=6.3s  term={'success': 279, 'escape': 6, 'crash_docked': 5, 'timeout': 6, 'crash': 3, 'fell_back': 1}
+[gen  39] best=+273.66  avg=+258.71  comp=+532.37  succ=96%  align=0.84  fuel=0.93  mut=0.018  dt=5.7s  term={'success': 288, 'timeout': 3, 'fell_back': 3, 'crash_docked': 3, 'crash': 3}
+[gen  40] best=+274.18  avg=+257.16  comp=+531.34  succ=96%  align=0.82  fuel=0.94  mut=0.017  dt=6.0s  term={'success': 287, 'timeout': 3, 'escape': 7, 'fell_back': 3}
+[gen  41] best=+274.65  avg=+253.37  comp=+528.01  succ=94%  align=0.81  fuel=0.94  mut=0.017  dt=5.9s  term={'success': 283, 'fell_back': 3, 'timeout': 6, 'crash': 3, 'escape': 5}
+[gen  42] best=+272.70  avg=+237.59  comp=+510.29  succ=90%  align=0.87  fuel=0.93  mut=0.016  dt=6.2s  term={'success': 269, 'fell_back': 12, 'escape': 4, 'crash': 3, 'crash_docked': 6, 'timeout': 6}
+[gen  43] best=+272.98  avg=+254.50  comp=+527.48  succ=95%  align=0.87  fuel=0.93  mut=0.015  dt=5.8s  term={'success': 284, 'fell_back': 7, 'crash_docked': 1, 'timeout': 5, 'crash': 3}
+[gen  44] best=+272.95  avg=+254.82  comp=+527.77  succ=95%  align=0.85  fuel=0.93  mut=0.014  dt=5.1s  term={'success': 285, 'fell_back': 9, 'escape': 3, 'crash': 3}
+[gen  45] best=+270.43  avg=+257.70  comp=+528.13  succ=96%  align=0.91  fuel=0.92  mut=0.013  dt=6.2s  term={'success': 289, 'fell_back': 6, 'timeout': 2, 'crash_docked': 3}
+[gen  46] best=+273.16  avg=+251.63  comp=+524.79  succ=94%  align=0.85  fuel=0.93  mut=0.012  dt=7.9s  term={'success': 282, 'timeout': 4, 'fell_back': 9, 'escape': 1, 'crash': 4}
+[gen  47] best=+273.24  avg=+257.07  comp=+530.31  succ=96%  align=0.85  fuel=0.93  mut=0.012  dt=8.0s  term={'success': 287, 'timeout': 6, 'escape': 6, 'crash': 1}
+[gen  48] best=+273.11  avg=+259.53  comp=+532.64  succ=96%  align=0.87  fuel=0.93  mut=0.011  dt=6.3s  term={'success': 289, 'escape': 5, 'crash_docked': 6}
+[gen  49] best=+273.38  avg=+258.00  comp=+531.38  succ=96%  align=0.86  fuel=0.93  mut=0.010  dt=7.8s  term={'success': 287, 'crash': 3, 'timeout': 3, 'escape': 4, 'fell_back': 3}
+[save] melhor rede da Fase 1:
+        composite = +532.64 (gen 48)
+        fitness individual = +273.11
+        recorde individual global = +274.65 (gen 41)
+        → checkpoints\phase1_best.pt
+[done] log final: checkpoints\training_log.jsonl
