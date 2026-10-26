@@ -179,6 +179,32 @@ class NeuralPopulation:
                 ).to(param.dtype)
                 param.add_(noise * mask)
 
+    def _tournament_select(
+            self,
+            ranked: list[int],
+            k: int,
+            generator: Optional[torch.Generator],
+    ) -> ActorCritic:
+        """@brief Escolhe um pai por torneio entre `k` posições sorteadas.
+
+        @details `ranked` é a lista de índices ordenados por fitness
+        decrescente; a posição `p` corresponde ao (p+1)-ésimo melhor.
+        Sortear `k` posições e escolher a menor equivale a "torneio
+        de tamanho k": vence quem estiver mais perto do topo.
+
+        @param ranked Lista de índices ordenada por fitness desc.
+        @param k Número de concorrentes por torneio (>= 1).
+        @param generator Gerador do PyTorch (reprodutibilidade).
+        @return A rede do vencedor.
+        """
+        n = len(ranked)
+        best_pos = n
+        for _ in range(k):
+            pos = int(torch.randint(0, n, (1,), generator=generator).item())
+            if pos < best_pos:
+                best_pos = pos
+        return self._networks[ranked[best_pos]]
+
     def evolve(
             self,
             fitness: Sequence[float],
@@ -187,17 +213,17 @@ class NeuralPopulation:
             mutation_rate: float = 0.05,
             mutation_std: float = 0.02,
             seed: Optional[int] = None,
+            tournament_size: int = 2,
     ) -> "NeuralPopulation":
         """@brief Gera a próxima população a partir de fitness por indivíduo.
 
-        @details Os `elite_count` melhores sobrevivem **sem alteração**. O
-        melhor par (rank 0 e rank 1) é usado como pais dos demais:
-        "sexual" faz crossover elemento-a-elemento + mutação gaussiana;
-        "asexual" clona o melhor e muta. O tamanho da nova população é
-        preservado, assim como `obs_dim`, `n_actions` e `hidden_dim`.
+        @details Os `elite_count` melhores sobrevivem **sem alteração**.
+        O restante é gerado por: dois pais sorteados por torneio
+        (`tournament_size`), crossover uniforme (sexual) ou clone
+        (assexual), seguido de mutação gaussiana.
 
-        @param fitness Lista de fitness (maior = melhor), na mesma ordem
-            de `self._networks`. Deve ter o mesmo comprimento.
+        @param fitness Lista de fitness (maior = melhor), na mesma
+            ordem de `self._networks`.
         @param method "sexual" (recombinação) ou "asexual" (clone).
         @param elite_count Quantos dos melhores são preservados
             intactos. `0` = pura descendência; `size` = pura elite.
@@ -205,6 +231,8 @@ class NeuralPopulation:
         @param mutation_std Desvio-padrão do ruído gaussiano.
         @param seed Semente do gerador de mutação/crossover. `None` usa
             o RNG global do PyTorch.
+        @param tournament_size Tamanho do torneio para seleção dos pais.
+            `1` = uniforme; `>= size` = sempre o melhor.
         @return Nova `NeuralPopulation`, do mesmo tamanho.
         @throws ValueError Se `fitness` tiver tamanho diferente, se
             `method` for desconhecido, ou se `elite_count` sair de
@@ -230,10 +258,7 @@ class NeuralPopulation:
         # Ranking decrescente; `sorted` é estável → empates preservam ordem.
         ranked = sorted(range(len(fitness)), key=lambda i: fitness[i], reverse=True)
 
-        parent_a = self._networks[ranked[0]]
-        # Sexual exige dois pais distintos; cai para assexual se size == 1.
         can_sexual = method == "sexual" and len(ranked) >= 2
-        parent_b = self._networks[ranked[1]] if can_sexual else parent_a
 
         child_pop = self._empty_like(seed)
 
@@ -243,7 +268,9 @@ class NeuralPopulation:
 
         # Descendência.
         while len(child_pop._networks) < self.size:
+            parent_a = self._tournament_select(ranked, tournament_size, generator)
             if can_sexual:
+                parent_b = self._tournament_select(ranked, tournament_size, generator)
                 child = self._crossover(parent_a, parent_b, generator)
             else:
                 child = self._clone(parent_a)

@@ -1,42 +1,25 @@
-# DESIGN.md — Piloto autônomo de inserção orbital
+# DESIGN — Piloto autônomo de inserção orbital
 
-Documento de decisões de design do projeto de RL. Escrito antes de
-qualquer linha de código, para servir de contrato entre as fases.
+## 1. Objetivo
 
-## 1. Objetivo do agente
+Levar o foguete da superfície de um corpo celeste até uma órbita
+estável com o mínimo de combustível e tempo, e opcionalmente pousar
+em outro corpo. O aprendizado é dividido em quatro fases
+curriculares, treinadas em sequência:
 
-Levar o foguete de um estado acoplado à superfície de um corpo celeste
-até uma órbita estável (não necessariamente circular) ao redor desse corpo, com o MÍNIMO de recursos
-(combustível e tempo) gastos. E também ser capaz de pousar corretamente em outro hospedeiro.
+| Fase | Nome            | Meta                                          |
+|------|-----------------|-----------------------------------------------|
+| 1    | Desacoplagem    | Sair da superfície com segurança              |
+| 2    | Órbita maior    | Atingir órbita estável com r_ref > r_inicial  |
+| 3    | Órbita menor    | Atingir órbita estável com r_ref < r_inicial  |
+| 4    | Acoplagem       | Pousar suavemente em outro corpo              |
 
-Detalhes:
+Cada fase tem sua própria função de recompensa, critérios de
+término e currículo de estados iniciais. A rede é compartilhada
+entre as fases: a Fase 1 treina os pesos do zero; as seguintes
+fazem fine-tuning da população.
 
-- Órbita estável = órbita ligada (energia específica < 0, excentricidade
-  < 1) cujo raio permanece dentro de uma faixa de tolerância por uma
-  revolução completa (2π radianos de progresso angular acumulado).
-  Não exige excentricidade zero — órbitas elípticas são válidas.
-- O agente deve ser capaz de partir do repouso na superfície (decolar),
-  manobrar para a órbita alvo, e opcionalmente retornar (pouso).
-- O raio-alvo é um parâmetro ajustável α = r_ref / R_body, com valor
-  padrão α = 2.5 e faixa válida [1.5, 8.0]. O agente deve funcionar
-  para qualquer α nessa faixa.
-
-## 2. Por que RL (e não controle clássico)
-
-Inserção orbital tem solução analítica (Hohmann), mas:
-
-- o foguete está acoplado e precisa decolar antes;
-- empuxo é binário (on/off), sem modulação fina;
-- a rotação consome combustível, então até mirar o bico é uma
-  decisão de orçamento;
-- queremos minimizar esforço e combustível, não apenas atingir o alvo.
-
-PPO é adequado: simples, estável, e projetado para espaços de ação
-discretos.
-
-## 3. Espaço de ações
-
-Discreto, 6 ações:
+## 2. Espaço de ações (discreto, 6)
 
 | idx | rotação | propulsão |
 |-----|---------|-----------|
@@ -47,246 +30,134 @@ Discreto, 6 ações:
 | 4   |  0      | on  |
 | 5   | +1      | on  |
 
-- Rotação: -1, 0, +1 (esquerda, nada, direita). Velocidade angular
-  constante (`Rocket.rotation_speed`, 120°/s por default).
-- Propulsão: binária. Consome combustível por passo enquanto ativa.
+Rotação: `Rocket.rotation_speed` (rad/s). Propulsão binária;
+consome `fuel_thrust_rate·dt` por passo. Rotação consome
+`fuel_rotation_rate·dt` (dupla penalidade: tanque **e** `c_rotate`).
 
-Recurso finito por episódio. Os parâmetros vivem em
-`SimulationConfig`: `fuel_max`, `fuel_thrust_rate`, `fuel_rotation_rate`.
+## 3. Espaço de observação (9 floats)
 
-Consumo por passo fixo (`dt = Configs.fixed_timestep`):
+Normalizado por `μ = G·(M_host + M_rocket)`, `r_ref = α·R_host`,
+`v_ref = √(μ/r_ref)`, `ω_ref = v_ref/r_ref`, `a_g_ref = μ/r_ref²`.
 
-| comando | consumo por passo |
-|---|---|
-| empuxo ativo | `fuel_thrust_rate · dt` |
-| rotação ativa | `fuel_rotation_rate · dt` |
+| idx | nome | faixa |
+|-----|------|-------|
+| 0 | r / r_ref                               | [0, 8] |
+| 1 | v_r / v_ref                             | [-5, 5] |
+| 2 | v_t / v_ref                             | [-5, 5] |
+| 3 | sin(θ_bico − θ_radial)                  | [-1, 1] |
+| 4 | cos(θ_bico − θ_radial)                  | [-1, 1] |
+| 5 | docked                                  | {0, 1} |
+| 6 | fuel / fuel_max                         | [0, 1] |
+| 7 | log10(a_thrust / a_g_ref) clip [-1, 2]  | |
+| 8 | log10(ω_rocket / ω_ref) clip [-1, 2]    | |
 
-## 5. Espaço de observação
+As mesmas 9 observações servem às quatro fases — a política não
+precisa saber em qual fase está, apenas o estado físico.
 
-Vetor de 9 floats. Todos normalizados por quantidades naturais da
-solução de dois corpos.
+## 4. Fase 1 — Desacoplagem
 
-Sejam `μ = G·(M_target + M_rocket)`,
-`r_ref = α · R_target`, `v_ref = sqrt(μ/r_ref)`,
-`ω_ref = v_ref/r_ref`, `a_g_ref = μ/r_ref²`.
-
-| idx | nome | fórmula | faixa típica |
-|-----|------|---------|--------------|
-| 0 | r/r_ref                    | distância / raio-alvo | [1.5, 8]     |
-| 1 | v_r/v_ref                  | velocidade radial / v_circ | [-5, 5]      |
-| 2 | v_t/v_ref                  | velocidade tangencial / v_circ | [-5, 5]      |
-| 3 | sin(θ_rel)                 | seno do ângulo bico−radial | [-1, 1]      |
-| 4 | cos(θ_rel)                 | cosseno do ângulo bico−radial | [-1, 1]      |
-| 5 | docked                     | 1 se acoplado | {0, 1}       |
-| 6 | fuel_remaining/fuel_max    | fração de combustível restante | [0, 1]       |
-| 7 | log10(a_thrust/a_g_ref)    | razão empuxo/gravidade local | [-1, 2]      |
-| 8 | log10(ω_rocket/ω_ref)      | razão giro/vel. angular orbital | [-1, 2]      |
-
-### Justificativa de cada índice
-
-- **0–2: coordenadas polares normalizadas.** O objetivo é definido em
-  termos de r e v angular, então damos exatamente essas quantidades. As
-  normalizações `r_ref` e `v_ref` alinham a observação à estrutura do
-  problema e conferem invariância de escala: a mesma política funciona
-  para qualquer α ∈ [1.5, 8.0].
-- **3–4: sin/cos do ângulo relativo.** Evita descontinuidade em ±π. Se
-  déssemos o ângulo cru, a rede veria 3.14 e −3.14 como opostos, quando
-  são quase iguais.
-- **5: docked.** Estado binário que muda a dinâmica (acoplado = posição
-  travada no hospedeiro).
-- **6: combustível restante.** A rede precisa saber seu orçamento para
-  decidir quando vale a pena queimar e — dado §4 — quando vale a pena
-  **girar**. Sem isso, ela não pode aprender a conservar.
-- **7: thrust_ratio em log10.** Razão entre aceleração de empuxo e
-  aceleração gravitacional local na órbita-alvo. Diz "quanta autoridade
-  de controle eu tenho". Varia em ordens de magnitude com α, por isso
-  log10.
-- **8: rotation_ratio em log10.** Razão entre velocidade angular do
-  foguete e velocidade angular orbital. Diz "quão rápido consigo girar
-  comparado ao período orbital". Mesma lógica.
-
-## 6. Função de recompensa
+Estado inicial: foguete **acoplado** na superfície de um host com
+`(M, R)` sorteados em faixas fixas. Ângulo radial aleatório.
+Objetivo: atingir `r ≥ 2·R_host` com `v_r > 0`.
 
 Recompensa por passo:
 
-    r_t = Φ(s_{t+1}) − Φ(s_t)                 (shaping)
-        − c_thrust · 1[propulsão]             (custo denso de queima)
-        − c_rotate · |rotação|                (custo denso de giro)
-        − c_time                              (custo denso de tempo)
+    r_t = Φ(s_{t+1}) − Φ(s_t)
+          − c_thrust · 1[propulsão]
+          − c_rotate · |rotação|
+          − c_time
 
-Com `c_thrust = 0.02`, `c_rotate = 0.003`, `c_time = 0.001`.
+    Φ(s) = min( 20 · max(0, r/R_host − 1), 20 )
 
-Potencial de shaping:
+Terminais:
 
-    Φ(s) = −( 2.0 · e_raio + 0.75 · e_radial + 0.75 · e_tang )
+| evento                                   | Δr   | tipo       |
+|------------------------------------------|------|------------|
+| sucesso: `r ≥ 2·R_host` **e** `v_r > 0`  | +100 | terminated |
+| colisão com o host após desacoplar       | −50  | terminated |
+| reacoplagem após desacoplar              | −50  | terminated |
+| fuga: `r > 8·R_host`                     | −50  | terminated |
+| combustível esgotado                     | −30  | terminated |
+| timeout                                  | −50  | truncated  |
 
-Cada termo limitado a 4.0 para evitar explosão:
-
-    e_raio   = |r / r_ref − 1|
-    e_radial = |v_r| / v_ref
-    e_tang   = ||v_t| − v_ref| / v_ref
-
-Recompensa terminal:
-
-| evento         | Δr     | tipo       | motivo |
-|----------------|--------|------------|--------|
-| sucesso        | +100   | terminated | órbita estável mantida por 2π |
-| colisão        | −100   | terminated | destruição do foguete |
-| fuga (> 8r_ref)| −50    | terminated | não retorna mais |
-| combustível = 0 sem sucesso | −20 | terminated | falha de planejamento |
-| limite de tempo| −5     | truncated  | lento demais |
+Timeout por episódio: `0.5 × T_orb(R_host)` passos, onde
+`T_orb(r) = 2π·√(r³/μ)`.
 
 ### Justificativa
 
-- **Shaping por potencial (Ng et al. 1999).** Somar Φ(s') − Φ(s) não
-  altera a política ótima, porque o somatório telescopa. Ganhamos
-  gradiente denso sem enviesar a solução.
-- **Pesos do potencial.** Raio é o primeiro obstáculo (chegar perto da
-  órbita-alvo); velocidades se ajustam depois. Daí o fator 2.0 vs 0.75.
-- **Custo denso de empuxo (0.02/step).** 100 passos de queima custam
-  2.0 — significativo, mas não proibitivo. Pequeno o bastante para o
-  agente aprender a usar empuxo, grande o bastante para desencorajar
-  pulsing constante.
-- **Δ Custo denso de giro.** O DESIGN original justificava `c_rotate`
-  como "girar não consome combustível, apenas tempo". **Isso deixou de
-  ser verdade** com a implementação atual (§4): a rotação debita
-  `fuel_rotation_rate · dt` por passo. Hoje o giro é penalizado **duas
-  vezes** — pelo shaping `c_rotate` e pelo consumo de tanque.
-  **Decisão pendente**: (a) aceitar a dupla penalidade como sinal
-  intencional, ou (b) reduzir/zerar `c_rotate` para evitar redundância.
-  Escolher após medir o uso real de combustível por giro nos primeiros
-  checkpoints.
-- **Custo de tempo pequeno.** Quebra empates sem dominar.
-- **Penalidade terminal por combustível esgotado.** Distinta da colisão
-  e da fuga: é uma falha de planejamento, não de física. −20 é
-  suficientemente negativa para desencorajar, menor que colisão porque
-  não destrói o foguete.
-- **Recompensa de sucesso grande.** +100 domina qualquer shaping
-  acumulado; sinaliza que órbita estável é o que importa.
+- **Shaping por potencial (Ng et al. 1999).** `Φ(s') − Φ(s)` não
+  altera a política ótima (somatório telescopa) e fornece gradiente
+  denso durante a subida.
+- **Escala de Φ = 20.** Uma subida de `1·R_host` rende +20; o
+  terminal de queda (−50) domina, mas ainda deixa espaço para
+  distinguir "subiu até 1.5R e caiu" de "mal saiu do lugar e caiu".
+  Sem isso, o sinal seria binário demais para o GA discriminar.
+- **Sucesso exige `v_r > 0`.** Cruzar `2·R_host` já caindo não
+  conta — o foguete precisa estar ganhando altitude.
+- **Queda simétrica ao timeout (−50).** Ambos são fracassos.
+  Punir a queda mais que a inação ensinaria "não tente", o que é
+  indesejável na fase de aprendizado.
+- **Reacoplagem após desacoplar = falha.** O foguete voltou ao
+  estado inicial; não aprendeu nada. `try_land` fica **desligado**
+  durante a Fase 1 para não capturar o foguete antes que ele limpe
+  a casca de acoplamento — a detecção de queda é feita via
+  `collides` + velocidade relativa.
 
-### Por que a órbita-alvo é parametrizada por α
+## 5. Fases 2–4
 
-Se `r_ref` fosse fixo, o agente aprenderia a atingir exatamente aquele
-raio. Ao parametrizarmos por α e randomizarmos α no treino, forçamos a
-política a generalizar: qualquer órbita dentro de [1.5, 8.0]·R_body é
-válida, dependendo do α do episódio. As observações normalizadas por
-`r_ref` fazem com que a tarefa, em espaço de observação, seja
-essencialmente a mesma para todo α.
+Placeholders — cada uma será detalhada quando a anterior
+estabilizar. Requisitos de alto nível:
 
-## 7. Condições de término
+- **Fase 2 (órbita maior):** estado inicial = foguete em voo
+  ascendente, fora da atmosfera; meta = inserir em órbita circular
+  com `r_ref > r_inicial`. Sucesso = manter a banda `r_ref ± 12%`
+  por `2π` de progresso angular.
+- **Fase 3 (órbita menor):** simétrico à Fase 2.
+- **Fase 4 (acoplagem):** estado inicial = órbita estável; meta =
+  aproximar e pousar em outro corpo sem colisão destrutiva.
 
-- **Sucesso:** progresso angular acumulado ≥ 2π **e** estado sempre
-  dentro da faixa estável. Se sair da faixa, o progresso zera. Isso
-  evita que a política "cole" na órbita por um instante e dispare
-  sucesso.
-- **Colisão:** qualquer dos quatro círculos de colisão do foguete
-  intersecta o círculo do alvo, **com velocidade relativa acima de
-  `SimulationConfig.merge_min_relative_speed`**. Abaixo desse limiar,
-  a sobreposição é tratada como contato suave (pouso), não como
-  colisão — o que permite o foguete repousar sem ser absorvido.
-- **Fuga:** r > 8·r_ref.
-- **Combustível esgotado sem sucesso.**
-- **Truncamento:** 3600 passos.
+## 6. Algoritmo de treino
 
-> **Δ Nota sobre acoplagem durante o episódio.** `Rocket.try_land`
-> reacopla o foguete a um hospedeiro sempre que a distância entra na
-> casca `r_dock` **e** a velocidade relativa fica dentro de
-> `SimulationConfig.landing_max_speed` (valor atual igual a
-> `merge_min_relative_speed`). Após o desacoplamento inicial, um
-> reencontro lento com o alvo dispararia esse caminho. O ambiente de
-> RL precisa mapear isso para um dos eventos acima (provavelmente
-> truncamento ou falha, jamais sucesso). **Decisão pendente.**
+Algoritmo genético sobre os pesos da rede.
 
-Faixa estável (todas precisam valer simultaneamente):
+Justificativa: as recompensas terminais dominam e os episódios são
+longos. PPO exigiria bootstrap de valor e mistura de gradientes
+entre rollouts de uma mesma rede, o que é complicado quando cada
+rollout explora uma condição inicial diferente e não há garantia
+de estacionariedade entre gerações. GA evolui a população de
+pesos diretamente e combina naturalmente com o currículo por
+fases.
 
-    |r/r_ref − 1|       < 0.12
-    |v_r| / v_ref       < 0.20
-    ||v_t| − v_ref|/v_ref < 0.20
+Cada geração:
 
-Os valores são a "banda de tolerância" da órbita: 12% em raio, 20% em
-cada velocidade. São generosos o bastante para uma órbita visualmente
-elíptica, apertados o bastante para excluir trajetórias de escape.
+1. Cada rede joga `K = 3` episódios com estado inicial
+   randomizado (host, ângulo); fitness = média das recompensas.
+2. Ordena por fitness.
+3. `elite_count` melhores são clonados intactos.
+4. Descendência: dois pais sorteados por **torneio** (`k = 3`),
+   crossover uniforme elemento-a-elemento, mutação gaussiana por
+   peso.
+5. `mutation_rate` decai linearmente de 0.05 a 0.01; `mutation_std`
+   fixo em 0.03.
 
-## 8. Estado inicial
+## 7. Reprodutibilidade
 
-Foguete acoplado à superfície do alvo, em ângulo radial aleatório.
-Velocidade relativa zero. Ângulo do foguete = ângulo radial.
+- Semente mestra: 42.
+- Rede inicial: `NeuralPopulation(seed=42)`; cada indivíduo deriva
+  de `SeedSequence(42).spawn(N)`.
+- Crossover e mutação usam `torch.Generator` semeado por geração.
+- Física é determinística (RK4, `dt` fixo).
+- Estocasticidade do ambiente (host, ângulos) usa `random`
+  resetada por episódio com `base_seed + gen·K + ep`.
 
+## 8. Critério de sucesso do projeto
 
-## 9. Randomização entre episódios
-
-Alvos do ambiente de RL (não confundir com a randomização da cena de
-teste em `Gravitation`, que hoje usa valores compatíveis com a tabela
-abaixo mas pode divergir):
-
-| parâmetro | distribuição                                       |
-|---|----------------------------------------------------|
-| massa do alvo     | uniforme, faixa `Gravitation._PLANET_MASS_RANGE`   |
-| raio do alvo      | uniforme, faixa `Gravitation._PLANET_RADIUS_RANGE` |
-| ângulo de acoplagem | uniforme em [0, 2π)                                |
-| α = r_ref / R_body | uniforme [1.5, 5.0]                                |
-
-α é randomizado apenas durante treino. Em avaliação e em produção, α
-é fixado (padrão 2.5) ou ajustado por teclado.
-
-## 10. Constantes físicas e de simulação
-
-Os valores abaixo **vivem no código**; esta seção apenas os referencia.
-Alterações numéricas devem ser feitas nos arquivos citados — este
-documento não é fonte de verdade para valores.
-
-| símbolo | referência no código |
-|---|---|
-| G | `SimulationConfig.gravitational_constant` |
-| softening | `SimulationConfig.gravitational_softening` |
-| dt | `Configs.fixed_timestep` |
-| massa do foguete | `Gravitation._ROCKET_MASS` |
-| empuxo (aceleração) | `Gravitation._ROCKET_THRUST_ACCELERATION` |
-| velocidade de giro | `Rocket.rotation_speed` (default) |
-| corpo do foguete | `Gravitation._ROCKET_BODY_LENGTH` × `_ROCKET_BODY_WIDTH` |
-| nariz do foguete | `Gravitation._ROCKET_NOSE_LENGTH` |
-| margem de acoplamento | `Rocket.DOCKING_MARGIN` |
-| `fuel_max` | `SimulationConfig.fuel_max` |
-| `fuel_thrust_rate` | `SimulationConfig.fuel_thrust_rate` |
-| `fuel_rotation_rate` | `SimulationConfig.fuel_rotation_rate` |
-| `merge_min_relative_speed` | `SimulationConfig.merge_min_relative_speed` |
-| `landing_max_speed` | `SimulationConfig.landing_max_speed` |
-## 11. Hiperparâmetros de PPO (baseline)
-
-| parâmetro | valor |
-|---|---|
-| hidden (2 camadas) | 128 |
-| learning rate      | 3e-4 |
-| n_steps por env    | 2048 |
-| batch size         | 64 |
-| n_epochs           | 10 |
-| gamma              | 0.995 |
-| gae_lambda         | 0.95 |
-| clip_eps           | 0.2 |
-| vf_coef            | 0.5 |
-| ent_coef           | 0.01 |
-| max_grad_norm      | 0.5 |
-
-Valores clássicos do paper original de PPO. Ajustes finos somente
-depois de um pipeline funcional.
-
-## 12. Reprodutibilidade
-
-- Seed mestra: 42.
-- `torch.manual_seed(42)`, `np.random.seed(42)` no início do treino.
-- Cada `env.reset()` recebe seed derivada via
-  `np.random.SeedSequence(42).spawn(n_envs)`.
-- Chamadas estocásticas da política usam `torch.Generator`, nunca o
-  `random` global.
-
-## 13. Critério de sucesso do projeto
-
-1. ≥ 70% de sucesso em 100 episódios consecutivos de avaliação
-   determinística, com α fixo em 2.5.
-2. Generalização: mesma política com α ∈ {2.0, 3.0, 4.0, 5.0} mantém
-   ≥ 50% de sucesso.
-3. Consumo médio de combustível em episódios de sucesso
-   significativamente menor que um baseline "queimar sem parar".
-4. `watch_training` mostra a política em ação sem erros.
-5. O controle por teclado altera α em tempo real e o agente responde
-   corretamente (tenta a nova órbita).
+1. Fase 1: ≥ 95% de sucesso em 100 episódios de avaliação
+   determinística.
+2. Fase 2: ≥ 70% de sucesso para `α ∈ [1.5, 3.0]`.
+3. Fase 3: ≥ 70% de sucesso para `α ∈ [3.0, 5.0]`.
+4. Fase 4: ≥ 70% de sucesso em 100 episódios.
+5. Consumo médio de combustível nos sucessos menor que baseline
+   "queimar sem parar".
+6. `main.py --model checkpoints/phase1_best.pt` mostra a política
+   funcionando sem erros.
