@@ -1,12 +1,8 @@
-"""Fase 1 — Desacoplagem: as redes aprendem a sair da superfície.
+"""Fase 1 — Desacoplagem: aprender a sair da superfície do host.
 
-O foguete começa acoplado. Cada geração roda `K` episódios por rede
-(host e ângulos sorteados por episódio) e evolui a população por GA
-com seleção por torneio.
-
-Meta: atingir `r ≥ 1.5·R_host` com velocidade alinhada à tangente
-(dentro de ~53°) e magnitude tangencial ≥ 0.5·v_ref. Bônus terminais
-premiam eficiência: menos combustível, menos tempo, melhor alinhamento.
+Meta: atingir `r ≥ 1.5·R_host` com `|v_t|/|v| ≥ 0.5` e
+`|v_t|/v_ref ≥ 0.5`. Bônus terminais premiam alinhamento,
+combustível restante e tempo.
 """
 
 import json
@@ -33,17 +29,18 @@ from src.ai.neural_population import NeuralPopulation
 
 
 class UndockingTrainer(Application):
-    """@brief Fase 1 do currículo: ensinar redes a desacoplar.
+    """@brief Treina redes para desacoplar e atingir `r ≥ α·R_host`.
 
-    @details Estado inicial sempre acoplado. Cada geração roda `K`
-    episódios (hosts sorteados) para reduzir o ruído do fitness; a
-    evolução usa torneio para manter diversidade gênica. A função de
-    recompensa premia alinhamento com a tangente e eficiência.
+    @details Cada geração roda `episodes_per_gen` episódios por rede
+    com host, ângulo e (se aplicável) α sorteados. A fitness é a média
+    das recompensas. O GA usa torneio + crossover uniforme + mutação
+    gaussiana. A rede salva é a melhor da geração de maior `best+avg`
+    — o recorde absoluto pode ser um "lucky outlier" cujo filho não
+    herda a qualidade.
     """
 
     _INITIAL_ZOOM = 0.08
 
-    # --- Foguete (fixo para todas as fases)
     ROCKET_MASS = 40.0
     ROCKET_BODY_LENGTH = 16.0
     ROCKET_BODY_WIDTH = 7.0
@@ -52,32 +49,23 @@ class UndockingTrainer(Application):
     ROCKET_COLOR = (220, 220, 230)
     ROCKET_NOSE_COLOR = (240, 110, 80)
 
-    # --- Host (sorteado por episódio)
     _HOST_MASS_RANGE = (400_000.0, 700_000.0)
     _HOST_RADIUS_RANGE = (500.0, 540.0)
 
-    # --- Raio-alvo (α): 1.5 para refletir a simplicidade da Fase 1.
-    # `_ALPHA` normaliza a observação (`r_ref = α·R`); `_SUCCESS_R_FACTOR`
-    # é a linha que dispara sucesso. Alinhados para que `r/r_ref = 1`
-    # exatamente na linha de sucesso, mantendo a observação em [0, 1]
-    # útil. Reduzir de 2.0 → 1.5 encurta a subida exigida (~2× menos
-    # altitude) ao custo de uma `v_ref` local maior (tangencial circular).
+    # α=1.5 encurta a subida exigida e mantém a observação em [0, 1]
+    # útil (`r/r_ref = 1` exatamente na linha de sucesso).
     _ALPHA = 1.5
     _SUCCESS_R_FACTOR = _ALPHA
 
-    # --- Limites
     _ESCAPE_R_FACTOR = 8.0
 
-    # --- Shaping (Φ)
     _PHI_ALT_SCALE = 20.0
     _PHI_TAN_SCALE = 10.0
 
-    # --- Custos densos (eficiência importa — aumentados)
     _C_THRUST = 0.04
     _C_ROTATE = 0.005
     _C_TIME = 0.002
 
-    # --- Terminais
     _TERMINAL_SUCCESS = +100.0
     _TERMINAL_CRASH = -50.0
     _TERMINAL_REDOCKED = -50.0
@@ -85,25 +73,16 @@ class UndockingTrainer(Application):
     _TERMINAL_FUEL = -30.0
     _TERMINAL_TIMEOUT = -50.0
 
-    # --- Bônus no sucesso (eficiência — aumentados)
     _SUCCESS_ALIGNMENT_MIN = 0.5
     _SUCCESS_VT_MIN = 0.5
     _ALIGNMENT_BONUS_SCALE = 50.0
     _FUEL_BONUS_SCALE = 70.0
     _TIME_BONUS_SCALE = 50.0
 
-    # --- Timeout: fração do período orbital na superfície
     _TIMEOUT_ORBITS = 0.75
 
-    # --- Currículo
     _TOURNAMENT_SIZE = 3
 
-    # --- Seleção da rede a salvar
-    # A rede salva é o melhor indivíduo da geração cujo score composto
-    # (`w_best·best + w_avg·avg`) for máximo. Evita salvar "lucky
-    # outliers" — indivíduos bons em gerações ruins, cuja prole
-    # tipicamente não herda a qualidade — e privilegia redes que
-    # funcionam de forma consistente.
     _SELECTION_W_BEST = 1.0
     _SELECTION_W_AVG = 1.0
 
@@ -121,6 +100,20 @@ class UndockingTrainer(Application):
         base_seed: int = 42,
         output_dir: Optional[Path] = None,
     ) -> None:
+        """@brief Configura o ambiente e o GA (sem popular o mundo).
+
+        @param config Janela e loop.
+        @param sim_config Física (G, softening, etc.).
+        @param max_generations Total de gerações.
+        @param episodes_per_gen Episódios por rede por geração.
+        @param method "sexual" (crossover) ou "asexual" (clone).
+        @param elite_count Indivíduos preservados intactos.
+        @param mutation_rate_start Taxa de mutação na geração 0.
+        @param mutation_rate_end Taxa de mutação na última geração.
+        @param mutation_std Desvio-padrão do ruído gaussiano.
+        @param base_seed Semente mestra.
+        @param output_dir Diretório de checkpoints e log.
+        """
         super().__init__(config)
         self.sim_config = sim_config
         self.integrator = RK4Integrator()
@@ -132,7 +125,6 @@ class UndockingTrainer(Application):
         self.networks: list = []
         self.population: Optional[NeuralPopulation] = None
 
-        # --- Estado por episódio
         self.rewards: list[float] = []
         self.alive: list[bool] = []
         self.steps: list[int] = []
@@ -146,13 +138,10 @@ class UndockingTrainer(Application):
         self._episode_success_fuel_fracs: list[float] = []
         self._episode_success_time_fracs: list[float] = []
 
-        # --- Buffer de observação (reutilizado por foguete/passo)
-        # `_build_observation_for(..., out=self._obs_buffer)` escreve
-        # nele in-place; consumido imediatamente na inferência, nunca
-        # sobrevive entre chamadas — seguro para reúso entre foguetes.
+        # Buffer único reusado por foguete/passo. Consumido imediatamente
+        # em `_apply_network_action`, sem sobreviver à chamada.
         self._obs_buffer: list[float] = [0.0] * 9
 
-        # --- Estado por geração
         self._gen_cumulative: list[float] = []
         self._gen_terminal_counts: dict[str, int] = {}
         self._gen_success_alignments: list[float] = []
@@ -161,7 +150,6 @@ class UndockingTrainer(Application):
         self._gen_episodes_done = 0
         self._gen_start_time = 0.0
 
-        # --- Sessão
         self.generation = 0
         self.max_generations = max_generations
         self.training_done = False
@@ -173,7 +161,6 @@ class UndockingTrainer(Application):
         self._best_composite_fitness: float = -math.inf
         self._best_ever_state: Optional[dict] = None
 
-        # --- Config do GA
         self.episodes_per_gen = episodes_per_gen
         self.method = method
         self.elite_count = elite_count
@@ -182,13 +169,8 @@ class UndockingTrainer(Application):
         self.mutation_std = mutation_std
         self.base_seed = base_seed
 
-        # --- Persistência
         self.output_dir = output_dir or Path("checkpoints")
         self.log_path = self.output_dir / "training_log.jsonl"
-
-    # ------------------------------------------------------------------
-    # Bootstrap
-    # ------------------------------------------------------------------
 
     def start_training(self, population: NeuralPopulation) -> None:
         """@brief Conecta a população inicial e inicia a geração 0."""
@@ -202,10 +184,6 @@ class UndockingTrainer(Application):
         self._gen_episodes_done = 0
         self._gen_start_time = perf_counter()
         self._start_episode()
-
-    # ------------------------------------------------------------------
-    # Ciclo de episódio / geração
-    # ------------------------------------------------------------------
 
     def _start_episode(self) -> None:
         """@brief Limpa o mundo e monta um cenário de desacoplagem."""
@@ -244,6 +222,12 @@ class UndockingTrainer(Application):
         self._init_episode_tracking()
 
     def _init_episode_tracking(self) -> None:
+        """@brief Zera buffers do episódio e pré-computa `v_ref`/timeout.
+
+        @details `prev_phi` recebe Φ do estado inicial para que o
+        shaping do primeiro passo seja exato. O timeout escala com
+        `_TIMEOUT_ORBITS·T_surface`.
+        """
         n = len(self.rockets)
         self._episode_step = 0
         self.rewards = [0.0] * n
@@ -298,6 +282,12 @@ class UndockingTrainer(Application):
             self._start_episode()
 
     def _end_generation(self) -> None:
+        """@brief Loga, evolui (ou encerra) e reconstrói o experimento.
+
+        @details Idempotente: chamadas após `training_done=True` são
+        no-op. No caminho de "max_generations atingido", não salva
+        aqui — `shutdown()` cobre janela fechada também.
+        """
         if self.training_done:
             return
 
@@ -312,12 +302,13 @@ class UndockingTrainer(Application):
             + self._SELECTION_W_AVG * avg
         ) if fitness else -math.inf
 
-        # 1) Recorde individual (informacional).
         if best > self._best_fitness_ever:
             self._best_fitness_ever = best
             self._best_fitness_gen = self.generation
 
-        # 2) Seleção da rede a salvar: melhor geração por composite.
+        # Salva o melhor indivíduo da geração com maior `best + avg`.
+        # O recorde absoluto pode ser um "lucky outlier" (bom só em
+        # gen ruim) cujo filho não herda a qualidade.
         if (composite > self._best_composite_score
                 and self.population is not None and fitness):
             self._best_composite_score = composite
@@ -325,6 +316,7 @@ class UndockingTrainer(Application):
             best_idx = max(range(n), key=lambda i: fitness[i])
             self._best_composite_fitness = fitness[best_idx]
             self._best_ever_state = {
+                # `clone` — o `state_dict` original morre em `evolve`.
                 k: v.detach().clone()
                 for k, v in self.population[best_idx].state_dict().items()
             }
@@ -383,16 +375,18 @@ class UndockingTrainer(Application):
         self._start_episode()
 
     def _current_mutation_rate(self) -> float:
+        """@brief Taxa de mutação linearmente decrescente com o progresso."""
         total = max(1, self.max_generations - 1)
         p = min(1.0, self.generation / total)
         return self.mutation_rate_start * (1.0 - p) + self.mutation_rate_end * p
 
-    # ------------------------------------------------------------------
-    # Spawn
-    # ------------------------------------------------------------------
-
-    def _spawn_host(self, mass: float, radius: float,
-                    position: pygame.Vector2) -> MassObject:
+    def _spawn_host(
+        self,
+        mass: float,
+        radius: float,
+        position: pygame.Vector2,
+    ) -> MassObject:
+        """@brief Cria e adiciona o host ao mundo."""
         host = MassObject(
             config=self.sim_config,
             mass=mass, radius=radius,
@@ -403,7 +397,12 @@ class UndockingTrainer(Application):
         self.world.add(host)
         return host
 
-    def _spawn_rocket_docked(self, host: MassObject, angle: float) -> Rocket:
+    def _spawn_rocket_docked(
+        self,
+        host: MassObject,
+        angle: float,
+    ) -> Rocket:
+        """@brief Cria um foguete já acoplado a `host` no ângulo dado."""
         rocket = Rocket(
             config=self.sim_config,
             mass=self.ROCKET_MASS,
@@ -423,21 +422,25 @@ class UndockingTrainer(Application):
         rocket.dock_to(host, angle)
         return rocket
 
-    # ------------------------------------------------------------------
-    # Observação (DESIGN §3)
-    # ------------------------------------------------------------------
+    def _build_observation_for(
+        self,
+        rocket: Rocket,
+        host: MassObject,
+        out: Optional[list[float]] = None,
+    ) -> Optional[list[float]]:
+        """@brief Vetor de 9 floats do DESIGN §3.
 
-    def _build_observation_for(self, rocket: Rocket,
-                               host: MassObject,
-                               out: Optional[list[float]] = None,
-                               ) -> Optional[list[float]]:
+        @param rocket Foguete observado.
+        @param host Corpo de referência.
+        @param out Buffer opcional reutilizável (tamanho ≥ 9).
+        @return Vetor preenchido, ou None em estados degenerados.
+        """
         if out is None:
             out = [0.0] * 9
         if not rocket.active or not host.active:
             return None
 
-        G = self.sim_config.gravitational_constant
-        mu = G * (host.mass + rocket.mass)
+        mu = self.sim_config.gravitational_constant * (host.mass + rocket.mass)
         if mu <= 0.0:
             return None
         alpha = float(rocket.alpha)
@@ -464,8 +467,7 @@ class UndockingTrainer(Application):
 
         nx = math.cos(rocket.angle)
         ny = math.sin(rocket.angle)
-        cos_rel = (nx * rp_x + ny * rp_y) / r
-        cos_rel = max(-1.0, min(1.0, cos_rel))
+        cos_rel = max(-1.0, min(1.0, (nx * rp_x + ny * rp_y) / r))
         sin_rel = (rp_x * ny - rp_y * nx) / r
 
         docked = 1.0 if rocket.docked_to is not None else 0.0
@@ -486,24 +488,17 @@ class UndockingTrainer(Application):
         out[8] = log_rot
         return out
 
-    # ------------------------------------------------------------------
-    # Inferência (fast path)
-    # ------------------------------------------------------------------
+    def _apply_network_action(
+        self,
+        rocket: Rocket,
+        network,
+        obs: list[float],
+    ) -> None:
+        """@brief Fast path de `control_with_network` para o hot loop.
 
-    def _apply_network_action(self, rocket: Rocket, network,
-                              obs: list[float]) -> None:
-        """@brief Fast path para o hot loop: sem validações repetidas.
-
-        @details Equivale a `rocket.control_with_network(network, obs,
-        deterministic=True)`, mas dispensa todas as checagens de
-        contrato (`hasattr`, `getattr`, `next(parameters())`, forma,
-        `numel`) e a validação de `set_ai_action`. Supõe rede
-        `ActorCritic` em CPU com `obs_dim=9`, `n_actions=6`.
-
-        Usa `torch.inference_mode()` em vez de `no_grad()`: mais rápido,
-        pois desabilita version-tracking de autograd e view-tracking,
-        seguro aqui (nunca treinamos no loop — o GA escreve direto
-        nos `param.data`).
+        @details Dispensa as validações de contrato (hasattr, device,
+        forma). `inference_mode` é mais rápido que `no_grad` porque o
+        loop nunca treina — o GA escreve direto nos `param.data`.
         """
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
         with torch.inference_mode():
@@ -514,12 +509,12 @@ class UndockingTrainer(Application):
         rotation_input, thrusting = Rocket.AI_ACTIONS[action]
         rocket.set_control(rotation_input, thrusting)
 
-    # ------------------------------------------------------------------
-    # Recompensa
-    # ------------------------------------------------------------------
-
     def _potential(self, r: float, v_t_abs: float, v_ref: float) -> float:
-        """@brief Φ(s) com valores de cinemática já computados."""
+        """@brief Φ(s) — altitude normalizada + tangencial em [0, 1].
+
+        @details Ambos os termos capados em 1 para dar gradiente suave
+        sem explodir em estados extremos.
+        """
         host = self.host
         if host is None or host.radius <= 0.0:
             return 0.0
@@ -549,6 +544,7 @@ class UndockingTrainer(Application):
         return self._potential(r, v_t_abs, self._v_ref[i])
 
     def _update_rewards(self) -> None:
+        """@brief Itera sobre foguetes vivos e aplica recompensa/terminais."""
         for i in range(len(self.rockets)):
             if not self.alive[i]:
                 continue
@@ -559,18 +555,23 @@ class UndockingTrainer(Application):
             self._update_reward_for(i)
 
     def _update_reward_for(self, i: int) -> None:
+        """@brief Recompensa e terminais do foguete `i`.
+
+        @details Ordem: shaping → custos → desacoplagem → sucesso
+        (r ≥ αR com alinhamento + vt mínimos) → colisão/fuga/fuel/
+        timeout.
+        """
         rocket = self.rockets[i]
         host = self.host
         if host is None:
             return
 
-        # Cinemática local computada uma única vez por passo.
         dx = rocket.position.x - host.position.x
         dy = rocket.position.y - host.position.y
         r_sq = dx * dx + dy * dy
+        # Guarda contra divisão por zero se o foguete "teleportar"
+        # para o centro do host (fusão ou integração degenerada).
         if r_sq <= 1e-24:
-            # Degenerado: foguete no centro do host. Trata como crash
-            # para não computar divisões por zero nos próximos passos.
             self.alive[i] = False
             self.terminal_reasons[i] = "crash"
             self.rewards[i] += self._TERMINAL_CRASH
@@ -582,21 +583,18 @@ class UndockingTrainer(Application):
         h = dx * rvy - dy * rvx
         v_t_abs = abs(h) / r
 
-        # Shaping por potencial (usa cinemática já computada).
         new_phi = self._potential(r, v_t_abs, self._v_ref[i])
-        shaping = new_phi - self.prev_phi[i]
+        self.rewards[i] += new_phi - self.prev_phi[i]
         self.prev_phi[i] = new_phi
 
-        # Custos densos.
-        cost_thrust = self._C_THRUST if rocket.thrusting else 0.0
-        cost_rotate = self._C_ROTATE * abs(rocket.rotation_input)
-        self.rewards[i] += shaping - cost_thrust - cost_rotate - self._C_TIME
+        self.rewards[i] -= self._C_THRUST if rocket.thrusting else 0.0
+        self.rewards[i] -= self._C_ROTATE * abs(rocket.rotation_input)
+        self.rewards[i] -= self._C_TIME
         self.steps[i] += 1
 
         if rocket.docked_to is None:
             self.ever_undocked[i] = True
 
-        # --- Terminais
         terminal: Optional[float] = None
         reason: Optional[str] = None
         success_alignment: Optional[float] = None
@@ -605,12 +603,13 @@ class UndockingTrainer(Application):
 
         r_host = host.radius
         if r >= self._SUCCESS_R_FACTOR * r_host:
-            speed_sq = rvx * rvx + rvy * rvy
-            speed = math.sqrt(speed_sq)
+            speed = math.sqrt(rvx * rvx + rvy * rvy)
             alignment = (v_t_abs / speed) if speed > 1e-6 else 0.0
             v_ref = self._v_ref[i]
             vt_frac = (v_t_abs / v_ref) if v_ref > 0.0 else 0.0
 
+            # `_SUCCESS_VT_MIN` bloqueia o exploit "coast ao ápice
+            # com v_r≈0 e v_t≈0" — sem ele, alignment sozinho passaria.
             if (alignment >= self._SUCCESS_ALIGNMENT_MIN
                     and vt_frac >= self._SUCCESS_VT_MIN):
                 fuel_frac = (
@@ -635,6 +634,9 @@ class UndockingTrainer(Application):
                 success_time_frac = time_frac
 
         if terminal is None:
+            # `collides` é testado mesmo com o foguete acoplado: só a
+            # rotação do bico pode disparar sobreposição nesse estado,
+            # o que significa bico dentro do host — crash, não repouso.
             if collides(host, rocket):
                 speed = (host.velocity - rocket.velocity).length()
                 if not self.ever_undocked[i]:
@@ -659,17 +661,19 @@ class UndockingTrainer(Application):
                 self._episode_success_fuel_fracs.append(success_fuel_frac)
                 self._episode_success_time_fracs.append(success_time_frac)
 
-    # ------------------------------------------------------------------
-    # Loop físico
-    # ------------------------------------------------------------------
-
     def fixed_update(self, fixed_delta_time: float) -> None:
+        """@brief Passo físico: inferência → integração → recompensa.
+
+        @details Encerra o episódio se todos morreram, se `host`
+        ficou inativo, ou se o timeout estourou; sobreviventes nesse
+        caso recebem timeout explícito.
+
+        @param fixed_delta_time Passo fixo em segundos.
+        """
         self._episode_step += 1
         host = self.host
 
         if host is not None and host.active and self.networks:
-            # Reutiliza self._obs_buffer entre foguetes (consumido
-            # imediatamente na inferência; seguro).
             for i, (rocket, network) in enumerate(zip(self.rockets, self.networks)):
                 if network is None or not rocket.active or not self.alive[i]:
                     continue
@@ -714,6 +718,11 @@ class UndockingTrainer(Application):
         self.world.purge_inactive()
 
     def _resolve_merges(self) -> None:
+        """@brief Funde o host com foguetes em colisão destrutiva.
+
+        @details Contato lento (abaixo de `merge_min_relative_speed`)
+        é ignorado — é o que permite o foguete repousar no host.
+        """
         host = self.host
         if host is None or not host.active:
             return
@@ -727,11 +736,16 @@ class UndockingTrainer(Application):
                 continue
             host.merge_with(rocket)
 
-    # ------------------------------------------------------------------
-    # Log
-    # ------------------------------------------------------------------
-
     def _write_generation_log(self, fitness: list[float], gen_dt: float) -> None:
+        """@brief Anexa uma linha JSONL com as métricas da geração.
+
+        @details Formato estável — alterações quebram a análise
+        histórica. Chamado antes de `evolve`, quando `self.rockets`
+        ainda aponta para a geração concluída.
+
+        @param fitness Recompensa final de cada indivíduo.
+        @param gen_dt Tempo de parede da geração, em segundos.
+        """
         host = self.host
         if host is None or not fitness:
             return
@@ -823,11 +837,8 @@ class UndockingTrainer(Application):
         with self.log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    # ------------------------------------------------------------------
-    # Render
-    # ------------------------------------------------------------------
-
     def update(self, delta_time: float) -> None:
+        """@brief Zoom, pan e ajuste do `speed_multiplier` (←/→)."""
         if self.input.mouse_wheel != 0:
             self.camera.zoom_at(
                 self.input.mouse_position,
@@ -841,6 +852,7 @@ class UndockingTrainer(Application):
             self.camera.move(-self.input.mouse_delta / self.camera.zoom)
 
     def render(self, renderer) -> None:
+        """@brief Desenha alvo, mundo e HUD do treino."""
         alpha = self.clock.interpolation_alpha
 
         host = self.host
@@ -877,11 +889,8 @@ class UndockingTrainer(Application):
             (10, 104), size=18, color=(255, 220, 120),
         )
 
-    # ------------------------------------------------------------------
-    # Persistência
-    # ------------------------------------------------------------------
-
     def _save_best_ever(self) -> None:
+        """@brief Salva em `phase1_best.pt` a melhor rede da sessão."""
         if self._best_ever_state is None:
             print("[shutdown] nenhuma geração concluída — nada a salvar.")
             return
@@ -902,6 +911,7 @@ class UndockingTrainer(Application):
             print(f"[shutdown] falha ao salvar: {exc}")
 
     def shutdown(self) -> None:
+        """@brief Encerra a sessão salvando a melhor rede. Idempotente."""
         if self._shutdown_done:
             return
         self._shutdown_done = True

@@ -1,21 +1,22 @@
 """Fase 2 — Órbita Maior: aprender a subir e manter órbita.
 
-Herda a habilidade de desacoplar da Fase 1 via warm-start da melhor
-rede. Cada episódio começa acoplado (preserva o skill) e tem α sorteado
-no range do currículo. Meta: alcançar a banda estável em `r_ref` e nela
-permanecer por 2π radianos de progresso angular. Bônus por eficiência.
+Herda a habilidade de desacoplar da Fase 1 via warm-start. Cada
+episódio começa acoplado e tem α sorteado no range do currículo.
 
-Mudanças-chave em relação à versão anterior:
-- `_TERMINAL_ESCAPE = -180` (era -40) — escape agora é pior que timeout.
-- `_STABLE_V_BAND = 0.20` (era 0.10) — DESIGN §7; banda mais atingível.
-- Crédito parcial: `_C_IN_POSITION` paga estar em r-band mesmo com
-  velocidade errada — sem isso, "chegou no alvo" e "não chegou" davam
-  o mesmo retorno e o GA estagnava.
-- `_init_episode_tracking` reseta `_episode_success_fuel` (bug de
-  acumulação entre episódios).
-- Timeout escala com período orbital do α (antes era fixo em 8000,
-  curto demais em α alto).
-- `speed_multiplier = 5.0` default — gerações ~5× mais rápidas.
+Meta: completar 2π dentro da banda estável (`r_ref ± 12%`,
+`v_r/v_ref < 0.20`, `|v_t/v_ref - 1| < 0.20`).
+
+Estrutura de recompensa (escada de milestones):
+  +20  T1: r ≥ 1.5·R (undock, igual à Fase 1)
+  +30  T2: entra na r-band (12%)
+  +50  T3: r-band + v-band (órbita circularizada)
+  +50  T4: 90° em banda
+  +100 T5: 180° em banda
+  +200 T6: 360° em banda → terminal, fim do episódio
+
+Terminais: escape = -500 (catastrófico), timeout = -50 (mild).
+Densos: +0.05/passo em banda cheia, +0.02/passo em posição
+       (crédito mínimo para não farmar "dwell sem velocidade").
 """
 
 import json
@@ -46,7 +47,6 @@ class OrbitRaiseTrainer(Application):
 
     _INITIAL_ZOOM = 0.05
 
-    # --- Foguete (idêntico à Fase 1)
     ROCKET_MASS = 40.0
     ROCKET_BODY_LENGTH = 16.0
     ROCKET_BODY_WIDTH = 7.0
@@ -55,72 +55,73 @@ class OrbitRaiseTrainer(Application):
     ROCKET_COLOR = (220, 220, 230)
     ROCKET_NOSE_COLOR = (240, 110, 80)
 
-    # --- Host
     _HOST_MASS_RANGE = (400_000.0, 700_000.0)
     _HOST_RADIUS_RANGE = (500.0, 540.0)
 
-    # --- Currículo de α
-    _ALPHA_MIN = 2.0
-    _ALPHA_MAX_START = 2.5
-    _ALPHA_MAX_END = 4.0
+    # α_min = 1.5 preserva o alvo da Fase 1 (a política herdada ainda
+    # é útil aqui). α_max cresce devagar: 1.7 → 2.5. Alvos altos são
+    # adiados para quando a rede souber circularizar.
+    _ALPHA_MIN = 1.5
+    _ALPHA_MAX_START = 1.7
+    _ALPHA_MAX_END = 2.5
 
-    # --- Banda estável (DESIGN §7)
-    _STABLE_R_BAND = 0.08
-    _STABLE_V_BAND = 0.10
+    # Banda estável — DESIGN §7.
+    _STABLE_R_BAND = 0.12
+    _STABLE_V_BAND = 0.20
 
     _SUCCESS_ANGLE = 2.0 * math.pi
 
-    # --- Limites
     _ESCAPE_R_FACTOR = 3.0
-
-    # --- Marco de desacoplagem (preserva o skill da Fase 1)
     _UNDOCK_R_FACTOR = 1.5
-    _UNDOCK_BONUS = 50.0
 
-    # --- Shaping
-    _PHI_R_SCALE = 60.0
-    _PHI_VR_SCALE = 30.0
-    _PHI_VT_SCALE = 60.0
+    # --- Escada de milestones (cada um dispara uma vez por episódio).
+    _MILESTONE_UNDOCK = 20.0
+    _MILESTONE_POSITION = 30.0
+    _MILESTONE_VELOCITY = 50.0
+    _MILESTONE_QUARTER = 50.0
+    _MILESTONE_HALF = 100.0
+
+    # --- Shaping (Φ). Telescopa, então não enviesa o ótimo — só
+    # torna o gradiente visível entre "subiu reto" e "subiu virando".
+    _PHI_R_SCALE = 40.0
+    _PHI_VR_SCALE = 20.0
+    _PHI_VT_SCALE = 40.0
     _PHI_CAP = 1.0
 
-    # --- Bônus densos (crédito parcial + banda cheia)
-    # `_C_IN_POSITION` paga estar na banda de r (|r/r_ref-1|<0.12),
-    # mesmo com velocidades erradas. `_C_IN_BAND` paga adicionalmente
-    # quem também bate a banda de velocidade. Sem o crédito parcial,
-    # "chegou no r_ref sem frear" e "ficou na superfície" davam o
-    # mesmo retorno, e o GA estagnava em gen 0.
-    _C_IN_POSITION = 0.05
-    _C_IN_BAND = 0.10
-    _BONUS_QUARTER_ORBIT = 20.0
-    _BONUS_HALF_ORBIT = 40.0
+    # --- Bônus densos.
+    # `_C_IN_BAND` é o sinal de "estou mantendo" — pequeno porque os
+    # milestones já pagam. `_C_IN_POSITION` é mínimo, só para não
+    # deixar o GA cego entre "nunca chega" e "chegou errado".
+    _C_IN_BAND = 0.05
+    _C_IN_POSITION = 0.02
 
-    # --- Custos densos
+    # --- Custos densos.
     _C_THRUST = 0.005
     _C_ROTATE = 0.001
     _C_TIME = 0.0002
 
-    # --- Terminais
-    # Escape é o pior desfecho: -180 < timeout -100 < "não fez nada" -100.
-    # Sem isso, a política da Fase 1 (thrust até escapar) era ótima local
-    # em +10, e o GA nunca explorava "chegar no alvo e ficar".
-    _TERMINAL_SUCCESS = +300.0
+    # --- Terminais. Escape é *catastrófico*: -500 vs -50 do timeout.
+    # A política da Fase 1 (thrust até escapar) passa de -90 para
+    # -430 — pior que qualquer coisa que o GA possa alcançar ficando
+    # parado. Isso destrói o atrator "spin out".
+    _TERMINAL_SUCCESS = +200.0
     _TERMINAL_CRASH = -100.0
     _TERMINAL_REDOCKED = -50.0
-    _TERMINAL_ESCAPE = -180.0
-    _TERMINAL_FUEL = -30.0
-    _TERMINAL_TIMEOUT = -100.0
+    _TERMINAL_ESCAPE = -500.0
+    _TERMINAL_FUEL = -80.0
+    _TERMINAL_TIMEOUT = -50.0
 
-    # --- Bônus de eficiência
-    _FUEL_BONUS_SCALE = 80.0
-    _TIME_BONUS_SCALE = 40.0
+    # --- Bônus de eficiência no sucesso.
+    _FUEL_BONUS_SCALE = 60.0
+    _TIME_BONUS_SCALE = 30.0
 
-    # --- Timeout: N períodos orbitais no α do episódio, com hard cap.
-    # 2.0 períodos permitem 1 volta completa + margem de aproximação.
-    # `_MAX_EPISODE_STEPS` evita explosão em α muito alto.
-    _TIMEOUT_ORBITS = 2.0
-    _MAX_EPISODE_STEPS = 8000
+    # --- Timeout: 3 períodos orbitais no α do episódio, com hard cap.
+    # Em α=2.5 (r_ref ≈ 1375), T_orb ≈ 5,300 steps; 3× = 16k, capado
+    # em 10k → 1.9 órbitas, suficiente para o sucesso (2π).
+    _TIMEOUT_ORBITS = 3.0
+    _MAX_EPISODE_STEPS = 10_000
 
-    # --- Currículo
+    # --- Currículo.
     _TOURNAMENT_SIZE = 3
     _SELECTION_W_BEST = 1.0
     _SELECTION_W_AVG = 1.0
@@ -129,20 +130,32 @@ class OrbitRaiseTrainer(Application):
         self,
         config: Configs,
         sim_config: SimulationConfig,
-        max_generations: int = 40,
+        max_generations: int = 60,
         episodes_per_gen: int = 2,
         method: str = "sexual",
-        elite_count: int = 5,
+        elite_count: int = 15,
         mutation_rate_start: float = 0.04,
         mutation_rate_end: float = 0.01,
         mutation_std: float = 0.03,
         base_seed: int = 42,
         output_dir: Optional[Path] = None,
     ) -> None:
+        """@brief Configura o ambiente e o GA (sem popular o mundo).
+
+        @param config Janela e loop.
+        @param sim_config Física (G, softening, etc.).
+        @param max_generations Total de gerações.
+        @param episodes_per_gen Episódios por rede por geração.
+        @param method "sexual" ou "asexual".
+        @param elite_count Indivíduos preservados intactos — 15%
+            preserva o skill da Fase 1 contra drift genético.
+        @param mutation_rate_start Taxa de mutação na geração 0.
+        @param mutation_rate_end Taxa de mutação na última geração.
+        @param mutation_std Desvio-padrão do ruído gaussiano.
+        @param base_seed Semente mestra.
+        @param output_dir Diretório de checkpoints e log.
+        """
         super().__init__(config)
-        # Aceleração da simulação em tempo de parede. Não afeta a
-        # sequência de estados (física é passo-fixo), só quantos
-        # `fixed_update` rodam por frame real. Default 5×.
         self.speed_multiplier = 5.0
 
         self.sim_config = sim_config
@@ -155,19 +168,23 @@ class OrbitRaiseTrainer(Application):
         self.networks: list = []
         self.population: Optional[NeuralPopulation] = None
 
-        # --- Estado por episódio
         self.rewards: list[float] = []
         self.alive: list[bool] = []
         self.steps: list[int] = []
         self.ever_undocked: list[bool] = []
         self.undock_ok: list[bool] = []
-        self.undock_awarded: list[bool] = []
         self.terminal_reasons: list[Optional[str]] = []
         self.prev_phi: list[float] = []
         self.prev_angle: list[Optional[float]] = []
         self.theta_accum: list[float] = []
-        self.quarter_awarded: list[bool] = []
-        self.half_awarded: list[bool] = []
+
+        # Bandeiras de milestone (resetadas por episódio).
+        self.awarded_undock: list[bool] = []
+        self.awarded_position: list[bool] = []
+        self.awarded_velocity: list[bool] = []
+        self.awarded_quarter: list[bool] = []
+        self.awarded_half: list[bool] = []
+
         self.in_band_steps: list[int] = []
         self._r_ref: list[float] = []
         self._v_ref: list[float] = []
@@ -181,7 +198,6 @@ class OrbitRaiseTrainer(Application):
 
         self._obs_buffer: list[float] = [0.0] * 9
 
-        # --- Estado por geração
         self._gen_cumulative: list[float] = []
         self._gen_terminal_counts: dict[str, int] = {}
         self._gen_undock_ok = 0
@@ -192,7 +208,6 @@ class OrbitRaiseTrainer(Application):
         self._gen_alphas: list[float] = []
         self._gen_start_time = 0.0
 
-        # --- Sessão
         self.generation = 0
         self.max_generations = max_generations
         self.training_done = False
@@ -215,11 +230,8 @@ class OrbitRaiseTrainer(Application):
         self.output_dir = output_dir or Path("checkpoints")
         self.log_path = self.output_dir / "training_log_phase2.jsonl"
 
-    # ------------------------------------------------------------------
-    # Bootstrap
-    # ------------------------------------------------------------------
-
     def start_training(self, population: NeuralPopulation) -> None:
+        """@brief Conecta a população inicial e inicia a geração 0."""
         self.population = population
         self.networks = list(population)
         self._gen_cumulative = [0.0] * len(population)
@@ -236,11 +248,8 @@ class OrbitRaiseTrainer(Application):
         self._gen_episodes_done = 0
         self._gen_alphas = []
 
-    # ------------------------------------------------------------------
-    # Ciclo
-    # ------------------------------------------------------------------
-
     def _start_episode(self) -> None:
+        """@brief Limpa o mundo e monta um cenário de órbita-alvo."""
         random.seed(
             self.base_seed
             + self.generation * self.episodes_per_gen
@@ -260,8 +269,9 @@ class OrbitRaiseTrainer(Application):
             position=pygame.Vector2(cx, cy),
         )
 
-        alpha_hi = self._current_alpha_hi()
-        self._current_alpha = random.uniform(self._ALPHA_MIN, alpha_hi)
+        self._current_alpha = random.uniform(
+            self._ALPHA_MIN, self._current_alpha_hi()
+        )
 
         n = len(self.networks)
         base_angle = random.uniform(0.0, 2.0 * math.pi)
@@ -279,6 +289,7 @@ class OrbitRaiseTrainer(Application):
         self._init_episode_tracking()
 
     def _init_episode_tracking(self) -> None:
+        """@brief Zera buffers do episódio e pré-computa `v_ref`/timeout."""
         n = len(self.rockets)
         self._episode_step = 0
         self.rewards = [0.0] * n
@@ -286,19 +297,18 @@ class OrbitRaiseTrainer(Application):
         self.steps = [0] * n
         self.ever_undocked = [False] * n
         self.undock_ok = [False] * n
-        self.undock_awarded = [False] * n
         self.terminal_reasons = [None] * n
         self.prev_phi = [0.0] * n
         self.prev_angle = [None] * n
         self.theta_accum = [0.0] * n
-        self.quarter_awarded = [False] * n
-        self.half_awarded = [False] * n
-        self.in_band_steps = [0] * n
 
-        # BUG FIX: `_episode_success_fuel` não estava sendo resetado
-        # aqui. Como só `_episode_success_time` e `_episode_success_band`
-        # eram zerados, `_episode_success_fuel` acumulava entre episódios
-        # e inflaria as métricas de sucesso a partir do primeiro acerto.
+        self.awarded_undock = [False] * n
+        self.awarded_position = [False] * n
+        self.awarded_velocity = [False] * n
+        self.awarded_quarter = [False] * n
+        self.awarded_half = [False] * n
+
+        self.in_band_steps = [0] * n
         self._episode_success_fuel = []
         self._episode_success_time = []
         self._episode_success_band = []
@@ -313,24 +323,19 @@ class OrbitRaiseTrainer(Application):
             self._r_ref = [r_ref] * n
             self._v_ref = [v_ref] * n
 
-            # Timeout escala com período orbital no α do episódio.
-            # α alto ⇒ período maior ⇒ precisa de mais passos para
-            # completar a volta exigida pelo sucesso. O hard cap evita
-            # explosão em α muito alto.
+            # Timeout = 3·T_orb(r_ref), capado em `_MAX_EPISODE_STEPS`.
             T_orb = 2.0 * math.pi * math.sqrt(r_ref ** 3 / mu)
             steps_for_orbits = int(
                 self._TIMEOUT_ORBITS * T_orb / self.config.fixed_timestep
             )
             self._episode_max_steps = max(
-                1,
-                min(self._MAX_EPISODE_STEPS, steps_for_orbits),
+                1, min(self._MAX_EPISODE_STEPS, steps_for_orbits)
             )
         else:
             self._r_ref = [0.0] * n
             self._v_ref = [1.0] * n
             self._episode_max_steps = self._MAX_EPISODE_STEPS
 
-        # Estado inicial de Φ e θ
         for i in range(n):
             rocket = self.rockets[i]
             if host is None or not rocket.active:
@@ -351,6 +356,7 @@ class OrbitRaiseTrainer(Application):
             self.prev_angle[i] = math.atan2(dy, dx)
 
     def _end_episode(self) -> None:
+        """@brief Acumula fitness do episódio; reinicia ou evolui."""
         for i in range(len(self.rockets)):
             self._gen_cumulative[i] += self.rewards[i]
             reason = self.terminal_reasons[i] or "timeout"
@@ -372,6 +378,7 @@ class OrbitRaiseTrainer(Application):
             self._start_episode()
 
     def _end_generation(self) -> None:
+        """@brief Loga, evolui (ou encerra) e reconstrói o experimento."""
         if self.training_done:
             return
 
@@ -389,6 +396,8 @@ class OrbitRaiseTrainer(Application):
             self._best_fitness_ever = best
             self._best_fitness_gen = self.generation
 
+        # Salva o melhor indivíduo da geração com maior `best + avg`.
+        # O recorde absoluto pode ser um "lucky outlier" de geração ruim.
         if (composite > self._best_composite_score
                 and self.population is not None and fitness):
             self._best_composite_score = composite
@@ -452,22 +461,23 @@ class OrbitRaiseTrainer(Application):
         self._start_episode()
 
     def _current_mutation_rate(self) -> float:
+        """@brief Taxa de mutação linearmente decrescente."""
         total = max(1, self.max_generations - 1)
         p = min(1.0, self.generation / total)
         return self.mutation_rate_start * (1.0 - p) + self.mutation_rate_end * p
 
     def _current_alpha_hi(self) -> float:
+        """@brief Topo do range de α para a geração atual."""
         progress = min(1.0, self.generation / max(1, self.max_generations - 1))
         return (
             self._ALPHA_MAX_START
             + (self._ALPHA_MAX_END - self._ALPHA_MAX_START) * progress
         )
 
-    # ------------------------------------------------------------------
-    # Spawn
-    # ------------------------------------------------------------------
-
-    def _spawn_host(self, mass, radius, position) -> MassObject:
+    def _spawn_host(
+        self, mass: float, radius: float, position: pygame.Vector2,
+    ) -> MassObject:
+        """@brief Cria e adiciona o host ao mundo."""
         host = MassObject(
             config=self.sim_config, mass=mass, radius=radius,
             position=pygame.Vector2(position),
@@ -477,7 +487,10 @@ class OrbitRaiseTrainer(Application):
         self.world.add(host)
         return host
 
-    def _spawn_rocket_docked(self, host, angle) -> Rocket:
+    def _spawn_rocket_docked(
+        self, host: MassObject, angle: float,
+    ) -> Rocket:
+        """@brief Cria um foguete acoplado a `host` no ângulo dado."""
         rocket = Rocket(
             config=self.sim_config,
             mass=self.ROCKET_MASS,
@@ -497,17 +510,25 @@ class OrbitRaiseTrainer(Application):
         rocket.dock_to(host, angle)
         return rocket
 
-    # ------------------------------------------------------------------
-    # Observação (DESIGN §3)
-    # ------------------------------------------------------------------
+    def _build_observation_for(
+        self,
+        rocket: Rocket,
+        host: MassObject,
+        out: Optional[list[float]] = None,
+    ) -> Optional[list[float]]:
+        """@brief Vetor de 9 floats do DESIGN §3.
 
-    def _build_observation_for(self, rocket, host, out=None):
+        @param rocket Foguete observado.
+        @param host Corpo de referência.
+        @param out Buffer opcional reutilizável (tamanho ≥ 9).
+        @return Vetor preenchido, ou None em estados degenerados.
+        """
         if out is None:
             out = [0.0] * 9
         if not rocket.active or not host.active:
             return None
-        G = self.sim_config.gravitational_constant
-        mu = G * (host.mass + rocket.mass)
+
+        mu = self.sim_config.gravitational_constant * (host.mass + rocket.mass)
         if mu <= 0.0:
             return None
         alpha = float(rocket.alpha)
@@ -555,20 +576,28 @@ class OrbitRaiseTrainer(Application):
         out[8] = log_rot
         return out
 
-    def _apply_network_action(self, rocket, network, obs) -> None:
+    def _apply_network_action(
+        self, rocket: Rocket, network, obs: list[float],
+    ) -> None:
+        """@brief Fast path de `control_with_network` para o hot loop.
+
+        @details Dispensa validações de contrato e usa
+        `inference_mode` (mais rápido que `no_grad`, pois não rastreia
+        version-counter nem views).
+        """
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
         with torch.inference_mode():
-            actions, _, _ = network.select_action(obs_tensor, deterministic=True)
+            actions, _, _ = network.select_action(
+                obs_tensor, deterministic=True
+            )
         action = int(actions.item())
         rotation_input, thrusting = Rocket.AI_ACTIONS[action]
         rocket.set_control(rotation_input, thrusting)
 
-    # ------------------------------------------------------------------
-    # Recompensa
-    # ------------------------------------------------------------------
-
-    def _potential(self, r: float, v_r: float, v_t_abs: float,
-                   r_ref: float, v_ref: float) -> float:
+    def _potential(
+        self, r: float, v_r: float, v_t_abs: float,
+        r_ref: float, v_ref: float,
+    ) -> float:
         """@brief Φ(s): quão perto da órbita circular alvo."""
         if r_ref <= 0.0 or v_ref <= 0.0:
             return 0.0
@@ -582,6 +611,7 @@ class OrbitRaiseTrainer(Application):
         )
 
     def _update_rewards(self) -> None:
+        """@brief Itera sobre foguetes vivos e aplica recompensa/terminais."""
         for i in range(len(self.rockets)):
             if not self.alive[i]:
                 continue
@@ -592,6 +622,15 @@ class OrbitRaiseTrainer(Application):
             self._update_reward_for(i)
 
     def _update_reward_for(self, i: int) -> None:
+        """@brief Recompensa, milestones e terminais do foguete `i`.
+
+        @details Ordem: shaping → custos → milestones (undock,
+        position, velocity, quarter, half) → sucesso → terminais de
+        falha. Cada milestone dispara **uma vez por episódio** e paga
+        um valor crescente; a escada inteira tem 550 pontos de
+        amplitude, dando ao GA gradiente para progredir em vez de
+        estacionar no primeiro degrau.
+        """
         rocket = self.rockets[i]
         host = self.host
         if host is None:
@@ -600,6 +639,8 @@ class OrbitRaiseTrainer(Application):
         dx = rocket.position.x - host.position.x
         dy = rocket.position.y - host.position.y
         r_sq = dx * dx + dy * dy
+        # Estado degenerado (r ≈ 0): sem isso, divisões por zero nos
+        # passos seguintes. Trata como crash.
         if r_sq <= 1e-24:
             self.alive[i] = False
             self.terminal_reasons[i] = "crash"
@@ -616,12 +657,12 @@ class OrbitRaiseTrainer(Application):
         r_ref = self._r_ref[i]
         v_ref = self._v_ref[i]
 
-        # Shaping telescópico (Φ(s') − Φ(s)).
+        # --- Shaping (telescopa; não enviesa o ótimo).
         new_phi = self._potential(r, v_r, v_t_abs, r_ref, v_ref)
         self.rewards[i] += new_phi - self.prev_phi[i]
         self.prev_phi[i] = new_phi
 
-        # Custos densos.
+        # --- Custos densos.
         self.rewards[i] -= self._C_THRUST if rocket.thrusting else 0.0
         self.rewards[i] -= self._C_ROTATE * abs(rocket.rotation_input)
         self.rewards[i] -= self._C_TIME
@@ -630,19 +671,15 @@ class OrbitRaiseTrainer(Application):
         if rocket.docked_to is None:
             self.ever_undocked[i] = True
 
-        # Marco de desacoplagem (uma vez).
-        if not self.undock_awarded[i] and r >= self._UNDOCK_R_FACTOR * host.radius:
-            self.undock_awarded[i] = True
-            self.rewards[i] += self._UNDOCK_BONUS
-        if not self.undock_ok[i] and r >= self._UNDOCK_R_FACTOR * host.radius:
+        # --- Milestone T1: undock.
+        if not self.awarded_undock[i] and r >= self._UNDOCK_R_FACTOR * host.radius:
+            self.awarded_undock[i] = True
             self.undock_ok[i] = True
+            self.rewards[i] += self._MILESTONE_UNDOCK
 
-        # Crédito parcial: posição (r-band) e velocidade (v-band) em
-        # separado. Sem isto, "chegou no alvo mas não freou" e "não
-        # chegou" davam o mesmo retorno, e o GA estagnava em gen 0.
+        # --- Bandeiras de banda.
         in_position = (
-            r_ref > 0.0
-            and abs(r / r_ref - 1.0) < self._STABLE_R_BAND
+            r_ref > 0.0 and abs(r / r_ref - 1.0) < self._STABLE_R_BAND
         )
         in_velocity = (
             v_ref > 0.0
@@ -651,8 +688,19 @@ class OrbitRaiseTrainer(Application):
         )
         in_band = in_position and in_velocity
 
-        # Progresso angular (delta computado em TODO passo, mesmo
-        # fora da banda; só ACUMULA se in_band).
+        # --- Milestone T2: posição.
+        if in_position and not self.awarded_position[i]:
+            self.awarded_position[i] = True
+            self.rewards[i] += self._MILESTONE_POSITION
+
+        # --- Milestone T3: velocidade (circularizada).
+        if in_band and not self.awarded_velocity[i]:
+            self.awarded_velocity[i] = True
+            self.rewards[i] += self._MILESTONE_VELOCITY
+
+        # --- Progresso angular (medido em TODO passo, acumulado só
+        # em banda). `delta` é o deslocamento angular desde o último
+        # passo, normalizado a (-π, π].
         angle = math.atan2(dy, dx)
         prev = self.prev_angle[i]
         if prev is not None:
@@ -669,23 +717,35 @@ class OrbitRaiseTrainer(Application):
             self.in_band_steps[i] += 1
             self.theta_accum[i] += delta
 
-            if not self.quarter_awarded[i] and abs(self.theta_accum[i]) >= math.pi / 2:
-                self.quarter_awarded[i] = True
-                self.rewards[i] += self._BONUS_QUARTER_ORBIT
-            if not self.half_awarded[i] and abs(self.theta_accum[i]) >= math.pi:
-                self.half_awarded[i] = True
-                self.rewards[i] += self._BONUS_HALF_ORBIT
+            # --- Milestones T4 e T5 (90° e 180° em banda).
+            if (not self.awarded_quarter[i]
+                    and abs(self.theta_accum[i]) >= math.pi / 2):
+                self.awarded_quarter[i] = True
+                self.rewards[i] += self._MILESTONE_QUARTER
+            if (not self.awarded_half[i]
+                    and abs(self.theta_accum[i]) >= math.pi):
+                self.awarded_half[i] = True
+                self.rewards[i] += self._MILESTONE_HALF
         else:
+            # Sair da banda zera o progresso angular — evita "colar
+            # por um instante, sair, voltar e somar 2π picado".
             self.theta_accum[i] = 0.0
 
-        # --- Terminais
-        terminal = None
-        reason = None
+        # --- Terminais.
+        terminal: Optional[float] = None
+        reason: Optional[str] = None
         s_fuel = s_time = s_band = None
 
+        # --- Sucesso (T6): 2π em banda.
         if in_band and abs(self.theta_accum[i]) >= self._SUCCESS_ANGLE:
-            fuel_frac = rocket.fuel / rocket.fuel_max if rocket.fuel_max > 0.0 else 0.0
-            time_frac = max(0.0, 1.0 - self.steps[i] / max(1, self._episode_max_steps))
+            fuel_frac = (
+                rocket.fuel / rocket.fuel_max
+                if rocket.fuel_max > 0.0 else 0.0
+            )
+            time_frac = max(
+                0.0,
+                1.0 - self.steps[i] / max(1, self._episode_max_steps),
+            )
             band_frac = self.in_band_steps[i] / max(1, self.steps[i])
             terminal = (
                 self._TERMINAL_SUCCESS
@@ -696,6 +756,9 @@ class OrbitRaiseTrainer(Application):
             s_fuel, s_time, s_band = fuel_frac, time_frac, band_frac
 
         if terminal is None:
+            # `collides` sem gate de `ever_undocked`: só a rotação do
+            # bico pode sobrepor com o foguete acoplado — crash, não
+            # repouso. Sem isso, "girar em solo" ficava livre.
             if collides(host, rocket):
                 speed = (host.velocity - rocket.velocity).length()
                 if not self.ever_undocked[i]:
@@ -705,6 +768,9 @@ class OrbitRaiseTrainer(Application):
                 else:
                     terminal, reason = self._TERMINAL_REDOCKED, "fell_back"
             elif r > self._ESCAPE_R_FACTOR * r_ref:
+                # Catastrófico: -500. A política herdada ("thrust até
+                # escapar") cai de -90 para -430; ela nunca mais
+                # vence o "sit still" (-50).
                 terminal, reason = self._TERMINAL_ESCAPE, "escape"
             elif rocket.fuel <= 0.0:
                 terminal, reason = self._TERMINAL_FUEL, "fuel"
@@ -720,11 +786,11 @@ class OrbitRaiseTrainer(Application):
                 self._episode_success_time.append(s_time)
                 self._episode_success_band.append(s_band)
 
-    # ------------------------------------------------------------------
-    # Loop físico
-    # ------------------------------------------------------------------
-
     def fixed_update(self, fixed_delta_time: float) -> None:
+        """@brief Passo físico: inferência → integração → recompensa.
+
+        @param fixed_delta_time Passo fixo em segundos.
+        """
         self._episode_step += 1
         host = self.host
 
@@ -769,6 +835,11 @@ class OrbitRaiseTrainer(Application):
         self.world.purge_inactive()
 
     def _resolve_merges(self) -> None:
+        """@brief Funde o host com foguetes em colisão destrutiva.
+
+        @details Contato abaixo de `merge_min_relative_speed` é
+        ignorado — é o que permite o foguete pousar sem ser absorvido.
+        """
         host = self.host
         if host is None or not host.active:
             return
@@ -782,11 +853,8 @@ class OrbitRaiseTrainer(Application):
                 continue
             host.merge_with(rocket)
 
-    # ------------------------------------------------------------------
-    # Log
-    # ------------------------------------------------------------------
-
     def _write_generation_log(self, fitness: list[float], gen_dt: float) -> None:
+        """@brief Anexa uma linha JSONL com as métricas da geração."""
         host = self.host
         if host is None or not fitness:
             return
@@ -878,11 +946,8 @@ class OrbitRaiseTrainer(Application):
         with self.log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    # ------------------------------------------------------------------
-    # Render / Input
-    # ------------------------------------------------------------------
-
     def update(self, delta_time: float) -> None:
+        """@brief Zoom, pan e ajuste do `speed_multiplier` (←/→)."""
         if self.input.mouse_wheel != 0:
             self.camera.zoom_at(self.input.mouse_position, 1.1 ** self.input.mouse_wheel)
         if self.input.was_pressed(pygame.K_RIGHT):
@@ -893,19 +958,20 @@ class OrbitRaiseTrainer(Application):
             self.camera.move(-self.input.mouse_delta / self.camera.zoom)
 
     def render(self, renderer) -> None:
+        """@brief Desenha alvo, banda, mundo e HUD do treino."""
         alpha = self.clock.interpolation_alpha
 
         host = self.host
         if host is not None and host.active and self._current_alpha > 0.0:
             center = self.camera.world_to_screen(host.position)
-            r = self.camera.world_to_screen_size(
-                self._current_alpha * host.radius
-            )
+            r = self.camera.world_to_screen_size(self._current_alpha * host.radius)
             renderer.draw_circle((100, 200, 255), center, r, width=1)
             for f in (1.0 - self._STABLE_R_BAND, 1.0 + self._STABLE_R_BAND):
                 renderer.draw_circle(
                     (80, 140, 190), center,
-                    self.camera.world_to_screen_size(self._current_alpha * host.radius * f),
+                    self.camera.world_to_screen_size(
+                        self._current_alpha * host.radius * f
+                    ),
                     width=1,
                 )
 
@@ -935,11 +1001,8 @@ class OrbitRaiseTrainer(Application):
             (10, 104), size=18, color=(255, 220, 120),
         )
 
-    # ------------------------------------------------------------------
-    # Persistência
-    # ------------------------------------------------------------------
-
     def _save_best_ever(self) -> None:
+        """@brief Salva em `phase2_best.pt` a melhor rede da sessão."""
         if self._best_ever_state is None:
             print("[shutdown] nenhuma geração concluída — nada a salvar.")
             return
@@ -960,6 +1023,7 @@ class OrbitRaiseTrainer(Application):
             print(f"[shutdown] falha ao salvar: {exc}")
 
     def shutdown(self) -> None:
+        """@brief Encerra a sessão salvando a melhor rede. Idempotente."""
         if self._shutdown_done:
             return
         self._shutdown_done = True
@@ -967,25 +1031,27 @@ class OrbitRaiseTrainer(Application):
         super().shutdown()
 
 
-# ----------------------------------------------------------------------
-# Warm-start a partir da Fase 1
-# ----------------------------------------------------------------------
-
 def load_population_from_phase1(
     checkpoint_path: Path,
     size: int,
     seed: int,
-    elite_count: int = 5,
+    elite_count: int = 15,
     diversity_std: float = 0.01,
 ) -> NeuralPopulation:
-    """@brief População warm-start a partir do checkpoint da Fase 1.
+    """@brief População warm-start a partir de um checkpoint `.pt`.
 
-    @details Os `elite_count` primeiros recebem os pesos **exatos** do
-    checkpoint (garantem que a habilidade de desacoplar é preservada).
-    Os demais partem dos mesmos pesos mas com ruído N(0, diversity_std²)
-    por parâmetro — semeia diversidade gênica sem destruir a política base.
+    @details Os `elite_count` primeiros carregam os pesos exatos (skill
+    preservado); os demais recebem os mesmos pesos + ruído
+    N(0, diversity_std²) por parâmetro — diversidade sem destruir a
+    política-base.
 
-    O GA consegue explorar variantes enquanto o elite ancora a qualidade.
+    @param checkpoint_path Caminho do `.pt`.
+    @param size Tamanho da população.
+    @param seed Semente mestra (e do gerador de ruído).
+    @param elite_count Indivíduos com pesos intactos. `15` preserva
+        15% da população como âncora anti-forgetting.
+    @param diversity_std Desvio-padrão do ruído por parâmetro.
+    @return População pronta para treino.
     """
     pop = NeuralPopulation(size=size, seed=seed)
     state = torch.load(checkpoint_path, map_location="cpu")
