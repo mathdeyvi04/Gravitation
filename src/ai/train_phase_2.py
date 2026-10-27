@@ -59,29 +59,37 @@ class OrbitRaiseTrainer(UndockingTrainer):
     _ESCAPE_R_FACTOR = 8.0
     _TIMEOUT_TARGET_ORBITS = 1.80
 
-    # Potencial: progresso até a altitude, proximidade do raio-alvo,
-    # velocidade circular e velocidade radial próxima de zero. A penalidade
-    # de ultrapassagem é forte para não premiar trajetórias que escapam.
-    _PHI_RADIUS_SCALE = 38.0
-    _PHI_TARGET_RADIUS_SCALE = 24.0
-    _PHI_TANGENTIAL_SCALE = 22.0
-    _PHI_RADIAL_SCALE = 22.0
-    _PHI_STABLE_ORBIT_SCALE = 22.0
-    _PHI_OVERSHOOT_SCALE = 110.0
+    # Potencial orbital em sinais densos. O primeiro termo é linear no
+    # progresso radial (não usa smoothstep, cuja derivada é zero na órbita
+    # inicial). Energia e momento angular recompensam imediatamente impulsos
+    # prógrados úteis para elevar o periastro/apastro da órbita de transferência.
+    _PHI_RADIUS_SCALE = 70.0
+    _PHI_TARGET_RADIUS_SCALE = 35.0
+    _PHI_TANGENTIAL_SCALE = 28.0
+    _PHI_RADIAL_SCALE = 18.0
+    _PHI_STABLE_ORBIT_SCALE = 35.0
+    _PHI_OVERSHOOT_SCALE = 150.0
+    _PHI_TRANSFER_ENERGY_SCALE = 75.0
+    _PHI_TRANSFER_ANGULAR_MOMENTUM_SCALE = 45.0
+    _PHI_CIRCULARIZATION_SCALE = 35.0
+    _PHI_EARLY_ENERGY_OVERSHOOT_SCALE = 90.0
+    _PHI_EARLY_ANGULAR_MOMENTUM_SCALE = 50.0
+    _CIRCULARIZATION_GATE_START = 0.62
+    _CIRCULARIZATION_GATE_END = 0.90
     _TARGET_RADIUS_SIGMA = 0.08
     _TANGENTIAL_SPEED_TOLERANCE = 0.20
     _RADIAL_SPEED_TOLERANCE = 0.12
 
-    # Custos de controle calibrados para que girar/queimar continuamente seja
-    # muito pior que executar manobras curtas e depois planar sem controle.
-    # O combustível consumido também é penalizado explicitamente.
-    _C_THRUST = 0.20
-    _C_ROTATE = 0.08
-    _C_THRUST_IN_BAND = 0.12
-    _C_ROTATE_IN_BAND = 0.08
+    # O primeiro impulso útil passa a render recompensa orbital de dois dígitos;
+    # estes custos continuam a favorecer manobras curtas. O custo extra dentro
+    # da banda impede queimar/girar desnecessariamente depois de chegar ao alvo.
+    _C_THRUST = 0.25
+    _C_ROTATE = 0.10
+    _C_THRUST_IN_BAND = 0.30
+    _C_ROTATE_IN_BAND = 0.15
     _C_TIME = 0.0005
-    _C_FUEL_USAGE = 250.0
-    _C_RADIAL_SPEED = 0.004
+    _C_FUEL_USAGE = 600.0
+    _C_RADIAL_SPEED = 0.01
     _R_STABLE_COAST_PER_STEP = 0.012
 
     _TERMINAL_SUCCESS = 180.0
@@ -138,7 +146,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
         )
         # Arquivo separado para não misturar gerações antigas, treinadas com
         # a função de recompensa anterior, com os resultados desta versão.
-        self.log_path = self.output_dir / "training_log_phase2_dual_minfuel_v3.jsonl"
+        self.log_path = self.output_dir / "training_log_phase2_dual_minfuel_v4.jsonl"
 
         self._current_alpha = self._TARGET_ALPHA_RANGE[0]
         self._target_radii: list[float] = []
@@ -576,14 +584,22 @@ class OrbitRaiseTrainer(UndockingTrainer):
         radial_velocity: float,
         tangential_velocity: float,
     ) -> float:
-        """Potencial denso: altitude-alvo, velocidade circular e estabilidade."""
-        target_radius = self._target_radii[i]
-        start_radius = self._start_radii[i]
+        """Recompensa o impulso de transferência, a subida e a circularização.
+
+        O início é deliberadamente linear: o smoothstep anterior quase não
+        recompensava os primeiros passos para fora da órbita inicial. A energia
+        específica e o momento angular dão retorno imediato a um impulso
+        prógrado. O alvo energético inicial é a órbita de transferência de
+        Hohmann; a circularização só é recompensada quando o foguete se aproxima
+        da faixa orbital, evitando incentivar uma queima excessiva no início.
+        """
+        target_radius = max(self._target_radii[i], 1e-9)
+        start_radius = max(self._start_radii[i], 1e-9)
         target_speed = max(self._v_ref[i], 1e-9)
         span = max(target_radius - start_radius, 1e-9)
-        progress = _clamp((radius - start_radius) / span, 0.0, 1.0)
-        smooth_progress = progress * progress * (3.0 - 2.0 * progress)
 
+        # Progresso linear sem região plana no estado inicial.
+        radius_progress = _clamp((radius - start_radius) / span, 0.0, 1.0)
         radius_error = radius / target_radius - 1.0
         radius_quality = math.exp(
             -0.5 * min((radius_error / self._TARGET_RADIUS_SIGMA) ** 2, 60.0)
@@ -599,19 +615,91 @@ class OrbitRaiseTrainer(UndockingTrainer):
         tangential_quality = math.exp(-0.5 * min(tangential_error**2, 60.0))
         radial_quality = math.exp(-0.5 * min(radial_error**2, 60.0))
 
+        host = self.host
+        if host is None or host.mass <= 0.0:
+            return 0.0
+        mu = self.sim_config.gravitational_constant * (host.mass + self.ROCKET_MASS)
+        if mu <= 0.0:
+            return 0.0
+
+        # Órbita de transferência: a energia desejada para que o raio-alvo seja
+        # aproximadamente o apastro é E = -mu / (r_inicial + r_alvo).
+        specific_energy = 0.5 * (
+            radial_velocity * radial_velocity
+            + tangential_velocity * tangential_velocity
+        ) - mu / radius
+        initial_circular_energy = -mu / (2.0 * start_radius)
+        transfer_energy = -mu / (start_radius + target_radius)
+        energy_span = max(transfer_energy - initial_circular_energy, 1e-9)
+        transfer_energy_progress = _clamp(
+            (specific_energy - initial_circular_energy) / energy_span, 0.0, 1.0
+        )
+        energy_overshoot = max(
+            0.0, (specific_energy - transfer_energy) / energy_span
+        )
+
+        # O impulso prógrado eleva o momento angular. A primeira etapa premia
+        # chegar ao momento angular da órbita de transferência; a segunda,
+        # circularizar na órbita-alvo, só vale perto do raio de destino.
+        angular_momentum = radius * tangential_velocity
+        initial_angular_momentum = math.sqrt(mu * start_radius)
+        transfer_angular_momentum = math.sqrt(
+            2.0 * mu * start_radius * target_radius
+            / (start_radius + target_radius)
+        )
+        target_angular_momentum = math.sqrt(mu * target_radius)
+        transfer_h_span = max(
+            transfer_angular_momentum - initial_angular_momentum, 1e-9
+        )
+        circularization_h_span = max(
+            target_angular_momentum - transfer_angular_momentum, 1e-9
+        )
+        transfer_angular_progress = _clamp(
+            (angular_momentum - initial_angular_momentum) / transfer_h_span,
+            0.0, 1.0,
+        )
+        circularization_progress = _clamp(
+            (angular_momentum - transfer_angular_momentum) / circularization_h_span,
+            0.0, 1.0,
+        )
+        circularization_gate = _clamp(
+            (radius_progress - self._CIRCULARIZATION_GATE_START)
+            / max(
+                self._CIRCULARIZATION_GATE_END - self._CIRCULARIZATION_GATE_START,
+                1e-9,
+            ),
+            0.0, 1.0,
+        )
+
         orbit_fraction = _clamp(
             self._stable_progress[i] / (2.0 * math.pi), 0.0, 1.0
         )
         overshoot = max(0.0, radius / target_radius - 1.0)
-        overshoot_penalty = self._PHI_OVERSHOOT_SCALE * overshoot**2
+        radius_overshoot_penalty = self._PHI_OVERSHOOT_SCALE * overshoot**2
+        early_energy_penalty = (
+            self._PHI_EARLY_ENERGY_OVERSHOOT_SCALE
+            * min(energy_overshoot**2, 4.0)
+            * (1.0 - circularization_gate)
+        )
+        early_angular_penalty = (
+            self._PHI_EARLY_ANGULAR_MOMENTUM_SCALE
+            * circularization_progress**2
+            * (1.0 - circularization_gate)
+        )
 
         return (
-            self._PHI_RADIUS_SCALE * smooth_progress
+            self._PHI_RADIUS_SCALE * radius_progress
+            + self._PHI_TRANSFER_ENERGY_SCALE * transfer_energy_progress
+            + self._PHI_TRANSFER_ANGULAR_MOMENTUM_SCALE * transfer_angular_progress
+            + self._PHI_CIRCULARIZATION_SCALE
+            * circularization_progress * circularization_gate
             + self._PHI_TARGET_RADIUS_SCALE * radius_quality
-            + self._PHI_TANGENTIAL_SCALE * smooth_progress * tangential_quality
-            + self._PHI_RADIAL_SCALE * smooth_progress * radial_quality
+            + self._PHI_TANGENTIAL_SCALE * radius_progress * tangential_quality
+            + self._PHI_RADIAL_SCALE * radius_progress * radial_quality
             + self._PHI_STABLE_ORBIT_SCALE * orbit_fraction
-            - overshoot_penalty
+            - radius_overshoot_penalty
+            - early_energy_penalty
+            - early_angular_penalty
         )
 
     def _compute_phi(self, i: int) -> float:
@@ -1157,7 +1245,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
         entry = {
             "event": "generation",
             "phase": "orbit_raise",
-            "reward_profile": "minimum_fuel_coasting_dual_task_v3",
+            "reward_profile": "minimum_fuel_coasting_dual_task_v4_transfer_shaping",
             "gen": int(self.generation),
             "episodes_per_net": int(self.episodes_per_gen),
             "wall_time_s": round(float(gen_dt), 3),
@@ -1174,11 +1262,28 @@ class OrbitRaiseTrainer(UndockingTrainer):
                 "radial_over_target_speed": self._RADIAL_SPEED_TOLERANCE,
                 "tangential_over_target_speed": self._TANGENTIAL_SPEED_TOLERANCE,
             },
+            "potential_scales": {
+                "linear_radius_progress": self._PHI_RADIUS_SCALE,
+                "target_radius_quality": self._PHI_TARGET_RADIUS_SCALE,
+                "tangential_velocity_quality": self._PHI_TANGENTIAL_SCALE,
+                "radial_velocity_quality": self._PHI_RADIAL_SCALE,
+                "stable_orbit_progress": self._PHI_STABLE_ORBIT_SCALE,
+                "transfer_energy_progress": self._PHI_TRANSFER_ENERGY_SCALE,
+                "transfer_angular_momentum_progress": self._PHI_TRANSFER_ANGULAR_MOMENTUM_SCALE,
+                "circularization_progress": self._PHI_CIRCULARIZATION_SCALE,
+                "radius_overshoot_penalty": self._PHI_OVERSHOOT_SCALE,
+                "early_energy_overshoot_penalty": self._PHI_EARLY_ENERGY_OVERSHOOT_SCALE,
+                "early_angular_momentum_penalty": self._PHI_EARLY_ANGULAR_MOMENTUM_SCALE,
+                "circularization_gate_start": self._CIRCULARIZATION_GATE_START,
+                "circularization_gate_end": self._CIRCULARIZATION_GATE_END,
+            },
             "control_costs": {
                 "thrust_per_step": self._C_THRUST,
                 "rotation_per_step": self._C_ROTATE,
                 "extra_thrust_in_target_band": self._C_THRUST_IN_BAND,
                 "extra_rotation_in_target_band": self._C_ROTATE_IN_BAND,
+                "time_per_step": self._C_TIME,
+                "radial_speed_squared_scale": self._C_RADIAL_SPEED,
                 "fuel_usage_scale": self._C_FUEL_USAGE,
                 "stable_coasting_reward_per_step": self._R_STABLE_COAST_PER_STEP,
             },
