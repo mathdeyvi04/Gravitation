@@ -1,12 +1,9 @@
 """Fase 2 — Órbita Maior: subir suavemente e manter órbita.
 
-Herda o skill de desacoplar via warm-start. Currículo de α cresce de
-[1.5, 2.5] até [1.5, 5.0] ao longo do treino.
+Herda o skill de desacoplar via warm-start. Currículo de α: [1.5, 2.5]
+→ [1.5, 5.0].
 
-Sinal de recompensa único por milestone, sem densos em posição/banda.
-O único sinal denso é o shaping Φ (telescópico) + custos de propulsão.
-
-Escada de milestones (cada um dispara uma vez por episódio):
+Escada de milestones (uma vez cada por episódio):
   +100  undock (r ≥ 1.5·R)
   +40   approach (r/r_ref ∈ [0.86, 0.95], sem overshoot)
   +200  smooth_entry (r-band com |v_r|/v_ref < 0.15, sem overshoot)
@@ -15,13 +12,19 @@ Escada de milestones (cada um dispara uma vez por episódio):
   +500  three_quarter (3π/2 em banda)
   +1000 success (2π em banda, terminal)
 
-Uma escada de ~1500 pontos entre "smooth entry" e "órbita completa",
-o que domina qualquer ganho marginal por "ficar em posição" e força
-o GA a progredir em vez de estacionar.
+Terminais (pior → melhor):
+  -800  crash_docked, crash     — destruição física
+  -700  fell_back                — mergulhou de volta no host
+  -400  docked_timeout           — nunca tentou
+  -300  escape                   — passou muito longe
+  -250  fuel                     — esgotou tentando
+  -100  timeout                  — sobreviveu em voo
+  +1000 success                  — órbita completa
 
-Custos de propulsão caros (thrust=0.02/passo, rotate+thrust extra
-+0.02/passo) — sem eles, "girar com motor ligado" ficava barato e
-o GA aprendia trajetórias caóticas.
+A regra é: *mergulhar no host* deve ser pior que *nunca tentar*
+(que por sua vez é pior que *voar sem sucesso*). Sem essa cadeia
+estrita, o GA aproveita qualquer assimetria — foi assim que
+"undock → fell_back" virou ótimo local com o reward antigo.
 """
 
 import json
@@ -63,9 +66,6 @@ class OrbitRaiseTrainer(Application):
     _HOST_MASS_RANGE = (400_000.0, 700_000.0)
     _HOST_RADIUS_RANGE = (500.0, 540.0)
 
-    # Currículo α: [1.5, 2.5] → [1.5, 5.0]. Começar em 2.5 dá tempo
-    # para o GA consolidar antes de esticar. α=1.5 preserva o alvo
-    # da Fase 1 (warm-start útil).
     _ALPHA_MIN = 1.5
     _ALPHA_MAX_START = 2.5
     _ALPHA_MAX_END = 5.0
@@ -78,7 +78,6 @@ class OrbitRaiseTrainer(Application):
     _ESCAPE_R_FACTOR = 3.0
     _UNDOCK_R_FACTOR = 1.5
 
-    # --- Milestones (uma vez cada por episódio).
     _MILESTONE_UNDOCK = 100.0
     _MILESTONE_APPROACH = 40.0
     _MILESTONE_SMOOTH_ENTRY = 200.0
@@ -86,48 +85,38 @@ class OrbitRaiseTrainer(Application):
     _MILESTONE_HALF = 400.0
     _MILESTONE_THREE_QUARTER = 500.0
 
-    # Smooth entry: `|v_r|/v_ref` abaixo deste limiar na primeira
-    # entrada na r-band, sem overshoot prévio.
     _SMOOTH_VR_FRAC = 0.15
 
-    # Approach: alvo intermediário entre o undock e a r-band.
     _APPROACH_R_MIN = 1.2
     _APPROACH_R_MAX_FRAC = 0.95
 
-    # Overshoot. Punido densamente e bloqueia `smooth_entry`
-    # permanentemente. A punição dobra acima de `_OVERSHOOT_FACTOR`.
     _OVERSHOOT_PENALTY_FACTOR = 1.10
     _OVERSHOOT_FACTOR = 1.25
     _C_OVERSHOOT = 0.50
 
-    # Shaping. `Φ_VR` alto é o que ensina subida suave — |v_r| alto
-    # perto de r_ref custa caro, forçando frear antes do alvo.
     _PHI_R_SCALE = 60.0
     _PHI_VR_SCALE = 100.0
     _PHI_VT_SCALE = 80.0
     _PHI_CAP = 1.0
 
-    # Custos de propulsão. `thrust` domina — é o que ensina
-    # "mínimo de combustível". `rotate+thrust simultâneos` adiciona
-    # extra porque é o padrão caótico que queremos eliminar.
     _C_THRUST = 0.02
     _C_ROTATE = 0.002
     _C_ROTATE_THRUSTING = 0.02
     _C_TIME = 0.0005
 
-    # Terminais.
+    # Terminais — cadeia estrita. Qualquer reordenação quebra a
+    # cadeia e reintroduz exploits.
     _TERMINAL_SUCCESS = 1000.0
-    _TERMINAL_CRASH = -150.0
-    _TERMINAL_REDOCKED = -50.0
+    _TERMINAL_CRASH = -800.0
+    _TERMINAL_REDOCKED = -700.0
+    _TERMINAL_DOCKED_TIMEOUT = -400.0
     _TERMINAL_ESCAPE = -300.0
-    _TERMINAL_FUEL = -100.0
-    _TERMINAL_TIMEOUT = -250.0
-    _TERMINAL_DOCKED_TIMEOUT = -500.0
+    _TERMINAL_FUEL = -250.0
+    _TERMINAL_TIMEOUT = -100.0
 
     _FUEL_BONUS_SCALE = 100.0
     _TIME_BONUS_SCALE = 30.0
 
-    # Timeout: 2 órbitas temáticas (cap em 20k steps para α=5).
     _TIMEOUT_ORBITS = 2.0
     _MAX_EPISODE_STEPS = 20_000
 
@@ -634,10 +623,11 @@ class OrbitRaiseTrainer(Application):
         """@brief Recompensa, milestones e terminais do foguete `i`.
 
         @details Ordem: shaping → custos → overshoot → milestones →
-        terminais. Sem densos em posição/banda — o único sinal denso
-        é o shaping Φ (telescópico) e os custos de propulsão. A
-        escada de milestones premia progresso real (chegar na banda
-        suavemente, mantê-la por ângulos crescentes), não "existir".
+        terminais. Sem densos em posição/banda. A escada de milestones
+        premia progresso real (chegar na banda suavemente, mantê-la
+        por ângulos crescentes). A cadeia de terminais é estritamente
+        ordenada: `crash_docked` < `fell_back` < `docked_timeout` <
+        `timeout` < `smooth_entry` < success.
         """
         rocket = self.rockets[i]
         host = self.host
@@ -667,10 +657,9 @@ class OrbitRaiseTrainer(Application):
         self.rewards[i] += new_phi - self.prev_phi[i]
         self.prev_phi[i] = new_phi
 
-        # Custos de propulsão. `_C_ROTATE_THRUSTING` é um extra quando
-        # o foguete gira E thrusta no mesmo passo — o padrão caótico
-        # que queremos eliminar. Nenhum desses custos tem "teto"; um
-        # foguete que thrusta sem parar sangra 0.02 × steps.
+        # Custos de propulsão. O custo extra em `rotate + thrust
+        # simultâneos` desencoraja o padrão caótico observado
+        # (girar com motor ligado gerando trajetória errática).
         thrusting = rocket.thrusting
         rotating = rocket.rotation_input != 0
         self.rewards[i] -= self._C_THRUST if thrusting else 0.0
@@ -683,8 +672,8 @@ class OrbitRaiseTrainer(Application):
         if rocket.docked_to is None:
             self.ever_undocked[i] = True
 
-        # Overshoot: punido densamente e marca permanentemente —
-        # bloqueia `smooth_entry`.
+        # Overshoot: punido densamente e marca permanente — bloqueia
+        # `smooth_entry`.
         if r_ref > 0.0:
             if r > r_ref * self._OVERSHOOT_FACTOR:
                 self.ever_overshot[i] = True
@@ -784,10 +773,15 @@ class OrbitRaiseTrainer(Application):
             if collides(host, rocket):
                 speed = (host.velocity - rocket.velocity).length()
                 if not self.ever_undocked[i]:
+                    # Ainda acoplado: colisão só pode ser o bico
+                    # dentro do host. -800, o pior desfecho.
                     terminal, reason = self._TERMINAL_CRASH, "crash_docked"
                 elif speed >= self.sim_config.merge_min_relative_speed:
                     terminal, reason = self._TERMINAL_CRASH, "crash"
                 else:
+                    # Undock seguido de retorno lento. -700, pior que
+                    # `docked_timeout` (-400), eliminando o exploit
+                    # "undock só para evitar timeout e voltar".
                     terminal, reason = self._TERMINAL_REDOCKED, "fell_back"
             elif r > self._ESCAPE_R_FACTOR * r_ref:
                 terminal, reason = self._TERMINAL_ESCAPE, "escape"
