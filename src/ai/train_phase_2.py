@@ -1,46 +1,19 @@
-"""Fase 2 — Órbita Maior: subir suavemente e manter órbita.
+"""Fase 2 — Inserção orbital: elevar a órbita e mantê-la estável.
 
-Herda o skill de desacoplar via warm-start. Currículo de α: [1.5, 2.5]
-→ [1.5, 5.0].
+A Fase 2 reutiliza a arquitetura e o loop físico da Fase 1. A população
+precisa ser inicializada com ``load_population_from_phase1`` para fazer
+fine-tuning dos pesos aprendidos na desacoplagem.
 
-Ladder de recompensa (cada milestone dispara uma vez por episódio):
-
-  +100  undock          — desacoplou (r ≥ 1.5·R)
-  +100  approach        — cruzou a zona de aproximação sem overshoot
-  +200  r_band_touched  — entrou na banda de raio (sem exigir v_r)
-  +400  smooth_entry    — entrou na banda com v_r baixo e sem overshoot
-  +400  quarter         — π/2 em banda
-  +500  half            — π em banda
-  +600  three_quarter   — 3π/2 em banda
-  +2000 success         — 2π em banda, terminal
-
-Terminais (pior → melhor):
-  -800  crash, crash_docked — destruição
-  -600  docked_timeout      — não tentou (pior não-crash)
-  -500  escape              — overshoot catastrófico
-  -300  fell_back           — undershoot (fail soft)
-  -250  fuel
-  -100  timeout             — ficou em voo sem sucesso
-  +2000 success
-
-A cadeia `crash < docked_timeout < escape < fell_back < timeout <
-smooth_entry < success` é estritamente monotônica: tentar é sempre
-melhor que não tentar; undershoot é melhor que overshoot; alcançar a
-banda suavemente domina qualquer falha; e sucesso domina tudo.
-
-Os milestones somam ~1800 no caminho até "smooth_entry", o que
-comprime a distância até o sucesso (+2000) a ~1400 — explorável pela
-mutação gaussiana em poucas gerações quando a população consegue
-chegar à banda.
-
-Overshoot é penalizado densamente (-1/passo acima de 1.02·r_ref,
--2/passo acima de 1.15·r_ref) para impedir o padrão "thrust até 2×
-r_ref, coastar de volta" que dominou treinos anteriores.
+Critério de sucesso: permanecer na banda de +/- 12% do raio-alvo durante
+um progresso angular completo de 2*pi, como especificado em DESIGN.md.
 """
+
+from __future__ import annotations
 
 import json
 import math
 import random
+from collections import Counter
 from pathlib import Path
 from time import perf_counter
 from typing import Optional
@@ -48,227 +21,126 @@ from typing import Optional
 import pygame
 import torch
 
-from src.config import Configs, SimulationConfig
-from src.engine.application import Application
-from src.engine.world import World
-from src.entities.massobject import MassObject
+from src.ai.neural_population import NeuralPopulation
+from src.ai.train_phase_1 import UndockingTrainer
 from src.entities.rocket import Rocket
 from src.physics.collision import collides
-from src.physics.composite_acceleration import CompositeAccelerationModel
 from src.physics.isolated_host_gravity import IsolatedHostGravity
-from src.physics.rk4 import RK4Integrator
-
-from src.ai.neural_population import NeuralPopulation
 
 
-class OrbitRaiseTrainer(Application):
-    """@brief Fase 2 do currículo: subir a órbita suavemente e mantê-la."""
+def _mean(values: list[float]) -> Optional[float]:
+    return sum(values) / len(values) if values else None
 
-    _INITIAL_ZOOM = 0.05
 
-    ROCKET_MASS = 40.0
-    ROCKET_BODY_LENGTH = 16.0
-    ROCKET_BODY_WIDTH = 7.0
-    ROCKET_NOSE_LENGTH = 9.0
-    ROCKET_THRUST_ACCELERATION = 1000.0
-    ROCKET_COLOR = (220, 220, 230)
-    ROCKET_NOSE_COLOR = (240, 110, 80)
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
 
-    _HOST_MASS_RANGE = (400_000.0, 700_000.0)
-    _HOST_RADIUS_RANGE = (500.0, 540.0)
 
-    _ALPHA_MIN = 1.5
-    _ALPHA_MAX_START = 2.5
-    _ALPHA_MAX_END = 5.0
+class OrbitRaiseTrainer(UndockingTrainer):
+    """Fine-tuning genético para inserir e manter uma órbita circular maior.
 
-    _STABLE_R_BAND = 0.12
-    _STABLE_V_BAND = 0.20
+    A classe herda de ``UndockingTrainer`` para reutilizar o integrador RK4,
+    a infraestrutura Pygame, a inferência da rede e o ciclo físico. São
+    substituídos o estado inicial, o potencial, os terminais, o log e o
+    checkpoint para refletir o objetivo orbital da Fase 2.
+    """
 
-    _SUCCESS_ANGLE = 2.0 * math.pi
+    _TARGET_ALPHA_RANGE = (2.0, 3.0)
+    _INITIAL_RADIUS_FACTOR_RANGE = (1.50, 1.60)
+    _INITIAL_RADIAL_SPEED_FACTOR = 0.08
+    _INITIAL_TANGENTIAL_SPEED_FACTOR = 0.93
 
-    _ESCAPE_R_FACTOR = 3.0
-    _UNDOCK_R_FACTOR = 1.5
+    _ACCEPTANCE_BAND = 0.12
+    _ESCAPE_R_FACTOR = 8.0
+    _TIMEOUT_TARGET_ORBITS = 1.80
 
-    # --- Milestones (uma vez cada por episódio).
-    _MILESTONE_UNDOCK = 100.0
-    _MILESTONE_APPROACH = 100.0
-    _MILESTONE_R_BAND_TOUCHED = 200.0
-    _MILESTONE_SMOOTH_ENTRY = 400.0
-    _MILESTONE_QUARTER = 400.0
-    _MILESTONE_HALF = 500.0
-    _MILESTONE_THREE_QUARTER = 600.0
+    # Recompensas de potencial e regularização de trajetória.
+    _PHI_RADIUS_SCALE = 42.0
+    _PHI_TANGENTIAL_SCALE = 28.0
+    _PHI_RADIAL_SCALE = 12.0
+    _PHI_STABLE_ORBIT_SCALE = 18.0
+    _PHI_OVERSHOOT_SCALE = 25.0
+    _TANGENTIAL_SPEED_TOLERANCE = 0.20
+    _RADIAL_SPEED_TOLERANCE = 0.12
 
-    _SMOOTH_VR_FRAC = 0.15
-
-    _APPROACH_R_MIN = 1.2
-    _APPROACH_R_MAX_FRAC = 0.95
-
-    # Overshoot: qualquer r > 1.02·r_ref sangra -1/passo; acima de
-    # 1.15·r_ref sangra -2/passo. Marca `ever_overshot` (bloqueia
-    # `smooth_entry` e `approach` permanentemente).
-    _OVERSHOOT_PENALTY_FACTOR = 1.02
-    _OVERSHOOT_FACTOR = 1.15
-    _C_OVERSHOOT = 1.0
-
-    _PHI_R_SCALE = 60.0
-    _PHI_VR_SCALE = 100.0
-    _PHI_VT_SCALE = 80.0
-    _PHI_CAP = 1.0
-
-    # Custos de propulsão: thrust caro (mínimo de combustível) e
-    # `rotate+thrust` extra-caro (evita "girar com motor ligado").
-    _C_THRUST = 0.03
+    # Custos por passo: empuxo/rotação/tempo, mais custo proporcional ao
+    # combustível realmente consumido. O custo de vr desencoraja uma subida
+    # excessivamente agressiva sem bloquear a aquisição de altitude.
+    _C_THRUST = 0.025
     _C_ROTATE = 0.002
-    _C_ROTATE_THRUSTING = 0.03
-    _C_TIME = 0.0005
+    _C_TIME = 0.0015
+    _C_FUEL_USAGE = 50.0
+    _C_RADIAL_SPEED = 0.003
 
-    _TERMINAL_SUCCESS = 2000.0
-    _TERMINAL_CRASH = -800.0
-    _TERMINAL_REDOCKED = -300.0
-    _TERMINAL_DOCKED_TIMEOUT = -600.0
-    _TERMINAL_ESCAPE = -500.0
-    _TERMINAL_FUEL = -250.0
-    _TERMINAL_TIMEOUT = -100.0
+    _TERMINAL_SUCCESS = 120.0
+    _TERMINAL_CRASH = -90.0
+    _TERMINAL_ESCAPE = -75.0
+    _TERMINAL_FUEL = -60.0
+    _TERMINAL_TIMEOUT = -65.0
 
-    _FUEL_BONUS_SCALE = 100.0
-    _TIME_BONUS_SCALE = 30.0
-
-    _TIMEOUT_ORBITS = 2.0
-    _MAX_EPISODE_STEPS = 20_000
-
-    _TOURNAMENT_SIZE = 3
-    _SELECTION_W_BEST = 1.0
-    _SELECTION_W_AVG = 1.0
+    _FUEL_BONUS_SCALE = 30.0
+    _ORBIT_QUALITY_BONUS_SCALE = 25.0
+    _TIME_BONUS_SCALE = 5.0
 
     def __init__(
         self,
-        config: Configs,
-        sim_config: SimulationConfig,
-        max_generations: int = 80,
-        episodes_per_gen: int = 2,
+        config,
+        sim_config,
+        max_generations: int = 60,
+        episodes_per_gen: int = 3,
         method: str = "sexual",
-        elite_count: int = 15,
-        mutation_rate_start: float = 0.04,
+        elite_count: int = 5,
+        mutation_rate_start: float = 0.025,
         mutation_rate_end: float = 0.01,
         mutation_std: float = 0.03,
         base_seed: int = 42,
         output_dir: Optional[Path] = None,
     ) -> None:
-        """@brief Configura o ambiente e o GA (sem popular o mundo).
+        if episodes_per_gen < 1:
+            raise ValueError("episodes_per_gen deve ser >= 1.")
+        if max_generations < 1:
+            raise ValueError("max_generations deve ser >= 1.")
 
-        @param config Janela e loop.
-        @param sim_config Física (G, softening, etc.).
-        @param max_generations Total de gerações.
-        @param episodes_per_gen Episódios por rede por geração.
-        @param method "sexual" ou "asexual".
-        @param elite_count Indivíduos preservados intactos.
-        @param mutation_rate_start Taxa de mutação na geração 0.
-        @param mutation_rate_end Taxa de mutação na última geração.
-        @param mutation_std Desvio-padrão do ruído gaussiano.
-        @param base_seed Semente mestra.
-        @param output_dir Diretório de checkpoints e log.
-        """
-        super().__init__(config)
-        self.speed_multiplier = 5.0
-
-        self.sim_config = sim_config
-        self.integrator = RK4Integrator()
-        self.camera.set_zoom(self._INITIAL_ZOOM)
-
-        self.world: World = World()
-        self.host: Optional[MassObject] = None
-        self.rockets: list[Rocket] = []
-        self.networks: list = []
-        self.population: Optional[NeuralPopulation] = None
-
-        self.rewards: list[float] = []
-        self.alive: list[bool] = []
-        self.steps: list[int] = []
-        self.ever_undocked: list[bool] = []
-        self.ever_overshot: list[bool] = []
-        self.undock_ok: list[bool] = []
-        self.terminal_reasons: list[Optional[str]] = []
-        self.prev_phi: list[float] = []
-        self.prev_angle: list[Optional[float]] = []
-        self.theta_accum: list[float] = []
-
-        self.awarded_undock: list[bool] = []
-        self.awarded_approach: list[bool] = []
-        self.awarded_r_band: list[bool] = []
-        self.awarded_smooth: list[bool] = []
-        self.awarded_quarter: list[bool] = []
-        self.awarded_half: list[bool] = []
-        self.awarded_three_quarter: list[bool] = []
-
-        self.in_band_steps: list[int] = []
-        self._r_ref: list[float] = []
-        self._v_ref: list[float] = []
-        self._episode_step = 0
-        self._episode_max_steps = 0
-        self._current_alpha: float = 0.0
-
-        self._episode_success_fuel: list[float] = []
-        self._episode_success_time: list[float] = []
-        self._episode_success_band: list[float] = []
-
-        self._obs_buffer: list[float] = [0.0] * 9
-
-        self._gen_cumulative: list[float] = []
-        self._gen_terminal_counts: dict[str, int] = {}
-        self._gen_undock_ok = 0
-        self._gen_r_band = 0
-        self._gen_smooth = 0
-        self._gen_success_fuel: list[float] = []
-        self._gen_success_time: list[float] = []
-        self._gen_success_band: list[float] = []
-        self._gen_episodes_done = 0
-        self._gen_alphas: list[float] = []
-        self._gen_start_time = 0.0
-
-        self.generation = 0
-        self.max_generations = max_generations
-        self.training_done = False
-        self._shutdown_done = False
-        self._best_fitness_ever: float = -math.inf
-        self._best_fitness_gen: int = -1
-        self._best_composite_score: float = -math.inf
-        self._best_composite_gen: int = -1
-        self._best_composite_fitness: float = -math.inf
-        self._best_ever_state: Optional[dict] = None
-
-        self.episodes_per_gen = episodes_per_gen
-        self.method = method
-        self.elite_count = elite_count
-        self.mutation_rate_start = mutation_rate_start
-        self.mutation_rate_end = mutation_rate_end
-        self.mutation_std = mutation_std
-        self.base_seed = base_seed
-
-        self.output_dir = output_dir or Path("checkpoints")
+        super().__init__(
+            config=config,
+            sim_config=sim_config,
+            max_generations=max_generations,
+            episodes_per_gen=episodes_per_gen,
+            method=method,
+            elite_count=elite_count,
+            mutation_rate_start=mutation_rate_start,
+            mutation_rate_end=mutation_rate_end,
+            mutation_std=mutation_std,
+            base_seed=base_seed,
+            output_dir=output_dir,
+        )
         self.log_path = self.output_dir / "training_log_phase2.jsonl"
 
-    def start_training(self, population: NeuralPopulation) -> None:
-        """@brief Conecta a população inicial e inicia a geração 0."""
-        self.population = population
-        self.networks = list(population)
-        self._gen_cumulative = [0.0] * len(population)
-        self._reset_gen_state()
-        self._gen_start_time = perf_counter()
-        self._start_episode()
+        self._current_alpha = self._TARGET_ALPHA_RANGE[0]
+        self._target_radii: list[float] = []
+        self._start_radii: list[float] = []
+        self._prev_angles: list[float] = []
+        self._prev_fuel: list[float] = []
+        self._max_radii: list[float] = []
+        self._thrust_steps: list[int] = []
+        self._rotation_steps: list[int] = []
+        self._inside_band_steps: list[int] = []
+        self._stable_progress: list[float] = []
+        self._max_stable_progress: list[float] = []
+        self._stable_error_sum: list[float] = []
+        self._stable_band_steps: list[int] = []
+        self._terminal_snapshots: list[Optional[dict]] = []
+        self._gen_episode_records: list[dict] = []
+        self._gen_alpha_values: list[float] = []
 
-    def _reset_gen_state(self) -> None:
-        self._gen_terminal_counts = {}
-        self._gen_undock_ok = 0
-        self._gen_r_band = 0
-        self._gen_smooth = 0
-        self._gen_success_fuel = []
-        self._gen_success_time = []
-        self._gen_success_band = []
-        self._gen_episodes_done = 0
-        self._gen_alphas = []
+    def start_training(self, population: NeuralPopulation) -> None:
+        """Inicia a Fase 2 com a população warm-start da Fase 1."""
+        self._gen_episode_records = []
+        self._gen_alpha_values = []
+        super().start_training(population)
 
     def _start_episode(self) -> None:
-        """@brief Limpa o mundo e monta um cenário de órbita-alvo."""
+        """Cria um host e inicia todos os foguetes em voo ascendente."""
         random.seed(
             self.base_seed
             + self.generation * self.episodes_per_gen
@@ -280,188 +152,457 @@ class OrbitRaiseTrainer(Application):
 
         host_mass = random.uniform(*self._HOST_MASS_RANGE)
         host_radius = random.uniform(*self._HOST_RADIUS_RANGE)
-        cx = self.sim_config.world_width * 0.5
-        cy = self.sim_config.world_height * 0.5
-
+        center_x = self.sim_config.world_width * 0.5
+        center_y = self.sim_config.world_height * 0.5
         self.host = self._spawn_host(
-            mass=host_mass, radius=host_radius,
-            position=pygame.Vector2(cx, cy),
+            mass=host_mass,
+            radius=host_radius,
+            position=pygame.Vector2(center_x, center_y),
         )
 
-        self._current_alpha = random.uniform(
-            self._ALPHA_MIN, self._current_alpha_hi()
+        self._current_alpha = random.uniform(*self._TARGET_ALPHA_RANGE)
+        self._gen_alpha_values.append(self._current_alpha)
+        initial_radius = (
+            random.uniform(*self._INITIAL_RADIUS_FACTOR_RANGE) * host_radius
         )
-
-        n = len(self.networks)
         base_angle = random.uniform(0.0, 2.0 * math.pi)
-        for i in range(n):
-            angle = base_angle + 2.0 * math.pi * i / n
-            self._spawn_rocket_docked(self.host, angle)
+        count = len(self.networks)
+
+        for i in range(count):
+            angle = base_angle + 2.0 * math.pi * i / max(1, count)
+            self._spawn_rocket_in_flight(
+                host=self.host,
+                angle=angle,
+                radius=initial_radius,
+                alpha=self._current_alpha,
+            )
 
         self.gravity = IsolatedHostGravity(
             gravitational_constant=self.sim_config.gravitational_constant,
             softening=self.sim_config.gravitational_softening,
             host_index=0,
         )
-
         self.camera.set_position(self.host.position)
         self._init_episode_tracking()
 
+    def _spawn_rocket_in_flight(
+        self,
+        host,
+        angle: float,
+        radius: float,
+        alpha: float,
+    ) -> Rocket:
+        """Cria um foguete já desacoplado, com velocidade radial positiva."""
+        radial = pygame.Vector2(math.cos(angle), math.sin(angle))
+        tangential = pygame.Vector2(-math.sin(angle), math.cos(angle))
+        mu = self.sim_config.gravitational_constant * (
+            host.mass + self.ROCKET_MASS
+        )
+        circular_speed = math.sqrt(mu / radius)
+        radial_speed = self._INITIAL_RADIAL_SPEED_FACTOR * circular_speed
+        tangential_speed = self._INITIAL_TANGENTIAL_SPEED_FACTOR * circular_speed
+        position = host.position + radial * radius
+        velocity = (
+            host.velocity
+            + radial * radial_speed
+            + tangential * tangential_speed
+        )
+
+        rocket = Rocket(
+            config=self.sim_config,
+            mass=self.ROCKET_MASS,
+            position=pygame.Vector2(position),
+            velocity=pygame.Vector2(velocity),
+            alpha=alpha,
+            angle=angle,
+            body_length=self.ROCKET_BODY_LENGTH,
+            body_width=self.ROCKET_BODY_WIDTH,
+            nose_length=self.ROCKET_NOSE_LENGTH,
+            thrust_acceleration=self.ROCKET_THRUST_ACCELERATION,
+            color=self.ROCKET_COLOR,
+            nose_color=self.ROCKET_NOSE_COLOR,
+        )
+        self.world.add(rocket)
+        self.rockets.append(rocket)
+        return rocket
+
     def _init_episode_tracking(self) -> None:
-        """@brief Zera buffers do episódio e pré-computa `v_ref`/timeout."""
-        n = len(self.rockets)
+        """Inicializa métricas e timeout em função do período da órbita-alvo."""
+        count = len(self.rockets)
         self._episode_step = 0
-        self.rewards = [0.0] * n
-        self.alive = [True] * n
-        self.steps = [0] * n
-        self.ever_undocked = [False] * n
-        self.ever_overshot = [False] * n
-        self.undock_ok = [False] * n
-        self.terminal_reasons = [None] * n
-        self.prev_phi = [0.0] * n
-        self.prev_angle = [None] * n
-        self.theta_accum = [0.0] * n
+        self.rewards = [0.0] * count
+        self.alive = [True] * count
+        self.steps = [0] * count
+        self.ever_undocked = [True] * count
+        self.terminal_reasons = [None] * count
+        self.prev_phi = [0.0] * count
+        self._episode_success_alignments = []
+        self._episode_success_fuel_fracs = []
+        self._episode_success_time_fracs = []
 
-        self.awarded_undock = [False] * n
-        self.awarded_approach = [False] * n
-        self.awarded_r_band = [False] * n
-        self.awarded_smooth = [False] * n
-        self.awarded_quarter = [False] * n
-        self.awarded_half = [False] * n
-        self.awarded_three_quarter = [False] * n
-
-        self.in_band_steps = [0] * n
-        self._episode_success_fuel = []
-        self._episode_success_time = []
-        self._episode_success_band = []
+        self._target_radii = []
+        self._start_radii = []
+        self._prev_angles = []
+        self._prev_fuel = []
+        self._max_radii = []
+        self._thrust_steps = [0] * count
+        self._rotation_steps = [0] * count
+        self._inside_band_steps = [0] * count
+        self._stable_progress = [0.0] * count
+        self._max_stable_progress = [0.0] * count
+        self._stable_error_sum = [0.0] * count
+        self._stable_band_steps = [0] * count
+        self._terminal_snapshots = [None] * count
 
         host = self.host
-        if host is not None and host.mass > 0.0 and host.radius > 0.0:
-            mu = self.sim_config.gravitational_constant * (
-                host.mass + self.ROCKET_MASS
-            )
-            r_ref = self._current_alpha * host.radius
-            v_ref = math.sqrt(mu / r_ref) if r_ref > 0.0 else 0.0
-            self._r_ref = [r_ref] * n
-            self._v_ref = [v_ref] * n
+        if host is None or host.mass <= 0.0 or host.radius <= 0.0:
+            self._v_ref = [0.0] * count
+            self._episode_max_steps = 1
+            return
 
-            T_orb = 2.0 * math.pi * math.sqrt(r_ref ** 3 / mu)
-            steps_for_orbits = int(
-                self._TIMEOUT_ORBITS * T_orb / self.config.fixed_timestep
-            )
-            self._episode_max_steps = max(
-                1, min(self._MAX_EPISODE_STEPS, steps_for_orbits)
-            )
-        else:
-            self._r_ref = [0.0] * n
-            self._v_ref = [1.0] * n
-            self._episode_max_steps = self._MAX_EPISODE_STEPS
+        mu = self.sim_config.gravitational_constant * (
+            host.mass + self.ROCKET_MASS
+        )
+        target_radius = self._current_alpha * host.radius
+        target_speed = math.sqrt(mu / target_radius)
+        target_period = 2.0 * math.pi * math.sqrt(target_radius**3 / mu)
+        dt = max(float(self.config.fixed_timestep), 1e-9)
+        self._episode_max_steps = max(
+            1, int(self._TIMEOUT_TARGET_ORBITS * target_period / dt)
+        )
 
-        for i in range(n):
-            rocket = self.rockets[i]
-            if host is None or not rocket.active:
-                continue
+        self._v_ref = [target_speed] * count
+        for rocket in self.rockets:
             dx = rocket.position.x - host.position.x
             dy = rocket.position.y - host.position.y
-            r = math.sqrt(dx * dx + dy * dy)
-            if r <= 1e-12:
-                continue
-            rvx = rocket.velocity.x - host.velocity.x
-            rvy = rocket.velocity.y - host.velocity.y
-            v_r = (dx * rvx + dy * rvy) / r
-            h = dx * rvy - dy * rvx
-            v_t_abs = abs(h) / r
-            self.prev_phi[i] = self._potential(
-                r, v_r, v_t_abs, self._r_ref[i], self._v_ref[i]
+            radius = math.hypot(dx, dy)
+            self._target_radii.append(rocket.alpha * host.radius)
+            self._start_radii.append(radius)
+            self._prev_angles.append(math.atan2(dy, dx))
+            self._prev_fuel.append(float(rocket.fuel))
+            self._max_radii.append(radius)
+
+        for i in range(count):
+            self.prev_phi[i] = self._compute_phi(i)
+
+    def _relative_state(self, i: int) -> tuple[float, float, float, float]:
+        """Retorna (r, velocidade radial, tangencial assinada, ângulo)."""
+        rocket = self.rockets[i]
+        host = self.host
+        if host is None:
+            return 0.0, 0.0, 0.0, 0.0
+
+        dx = rocket.position.x - host.position.x
+        dy = rocket.position.y - host.position.y
+        radius = math.hypot(dx, dy)
+        angle = math.atan2(dy, dx)
+        if radius <= 1e-12:
+            return 0.0, 0.0, 0.0, angle
+
+        rvx = rocket.velocity.x - host.velocity.x
+        rvy = rocket.velocity.y - host.velocity.y
+        radial_velocity = (dx * rvx + dy * rvy) / radius
+        tangential_velocity = (dx * rvy - dy * rvx) / radius
+        return radius, radial_velocity, tangential_velocity, angle
+
+    def _potential_for_state(
+        self,
+        i: int,
+        radius: float,
+        radial_velocity: float,
+        tangential_velocity: float,
+    ) -> float:
+        """Potencial denso: altitude-alvo, velocidade circular e estabilidade."""
+        target_radius = self._target_radii[i]
+        start_radius = self._start_radii[i]
+        target_speed = max(self._v_ref[i], 1e-9)
+        span = max(target_radius - start_radius, 1e-9)
+        progress = _clamp((radius - start_radius) / span, 0.0, 1.0)
+        smooth_progress = progress * progress * (3.0 - 2.0 * progress)
+
+        tangential_error = (
+            (tangential_velocity - target_speed)
+            / max(self._TANGENTIAL_SPEED_TOLERANCE * target_speed, 1e-9)
+        )
+        radial_error = (
+            radial_velocity
+            / max(self._RADIAL_SPEED_TOLERANCE * target_speed, 1e-9)
+        )
+        tangential_quality = math.exp(-0.5 * min(tangential_error**2, 60.0))
+        radial_quality = math.exp(-0.5 * min(radial_error**2, 60.0))
+
+        orbit_fraction = _clamp(
+            self._stable_progress[i] / (2.0 * math.pi), 0.0, 1.0
+        )
+        overshoot = max(0.0, radius / target_radius - 1.0)
+        overshoot_penalty = self._PHI_OVERSHOOT_SCALE * min(overshoot, 3.0) ** 2
+
+        return (
+            self._PHI_RADIUS_SCALE * smooth_progress
+            + self._PHI_TANGENTIAL_SCALE * smooth_progress * tangential_quality
+            + self._PHI_RADIAL_SCALE * smooth_progress * radial_quality
+            + self._PHI_STABLE_ORBIT_SCALE * orbit_fraction
+            - overshoot_penalty
+        )
+
+    def _compute_phi(self, i: int) -> float:
+        radius, radial_velocity, tangential_velocity, _ = self._relative_state(i)
+        if radius <= 1e-12 or not self._target_radii:
+            return 0.0
+        return self._potential_for_state(
+            i, radius, radial_velocity, tangential_velocity
+        )
+
+    def _finish_rocket(
+        self,
+        i: int,
+        reason: str,
+        terminal_reward: float,
+        orbit_quality: float = 0.0,
+    ) -> None:
+        """Termina um indivíduo e registra métricas no instante do terminal."""
+        if not self.alive[i]:
+            return
+
+        rocket = self.rockets[i]
+        target_radius = max(self._target_radii[i], 1e-9)
+        radius, _, _, _ = self._relative_state(i)
+        fuel_fraction = (
+            _clamp(rocket.fuel / rocket.fuel_max, 0.0, 1.0)
+            if rocket.fuel_max > 0.0 else 0.0
+        )
+        time_fraction = _clamp(
+            1.0 - self.steps[i] / max(1, self._episode_max_steps), 0.0, 1.0
+        )
+        self.rewards[i] += terminal_reward
+        self.alive[i] = False
+        self.terminal_reasons[i] = reason
+        self._terminal_snapshots[i] = {
+            "terminal": reason,
+            "fuel_remaining_frac": fuel_fraction,
+            "fuel_used_frac": 1.0 - fuel_fraction,
+            "radius_over_target": radius / target_radius,
+            "max_radius_over_target": self._max_radii[i] / target_radius,
+            "peak_orbit_progress": _clamp(
+                self._max_stable_progress[i] / (2.0 * math.pi), 0.0, 1.0
+            ),
+            "band_step_fraction": self._inside_band_steps[i] / max(1, self.steps[i]),
+            "thrust_steps": self._thrust_steps[i],
+            "rotation_steps": self._rotation_steps[i],
+            "steps": self.steps[i],
+            "orbit_quality": orbit_quality,
+            "target_alpha": self._current_alpha,
+        }
+        if reason == "success":
+            self._episode_success_alignments.append(orbit_quality)
+            self._episode_success_fuel_fracs.append(fuel_fraction)
+            self._episode_success_time_fracs.append(time_fraction)
+
+    def _update_reward_for(self, i: int) -> None:
+        """Aplica shaping, custos, estabilidade e condições terminais."""
+        rocket = self.rockets[i]
+        host = self.host
+        if host is None or not rocket.active:
+            return
+
+        radius, radial_velocity, tangential_velocity, angle = self._relative_state(i)
+        if radius <= 1e-12:
+            self._finish_rocket(i, "crash", self._TERMINAL_CRASH)
+            return
+
+        delta_angle = math.atan2(
+            math.sin(angle - self._prev_angles[i]),
+            math.cos(angle - self._prev_angles[i]),
+        )
+        self._prev_angles[i] = angle
+        self.steps[i] += 1
+
+        target_radius = self._target_radii[i]
+        in_band = abs(radius - target_radius) <= (
+            self._ACCEPTANCE_BAND * target_radius
+        )
+        if in_band:
+            self._inside_band_steps[i] += 1
+            # O sentido inicial é prógrado. Uma inversão angular reduz o
+            # progresso acumulado; deixar a banda reinicia o período estável.
+            self._stable_progress[i] = max(
+                0.0, self._stable_progress[i] + delta_angle
             )
-            self.prev_angle[i] = math.atan2(dy, dx)
+            self._stable_error_sum[i] += abs(radius / target_radius - 1.0)
+            self._stable_band_steps[i] += 1
+        else:
+            self._stable_progress[i] = 0.0
+            self._stable_error_sum[i] = 0.0
+            self._stable_band_steps[i] = 0
+
+        self._max_stable_progress[i] = max(
+            self._max_stable_progress[i], self._stable_progress[i]
+        )
+        self._max_radii[i] = max(self._max_radii[i], radius)
+
+        new_phi = self._potential_for_state(
+            i, radius, radial_velocity, tangential_velocity
+        )
+        self.rewards[i] += new_phi - self.prev_phi[i]
+        self.prev_phi[i] = new_phi
+
+        if rocket.thrusting:
+            self._thrust_steps[i] += 1
+            self.rewards[i] -= self._C_THRUST
+        if rocket.rotation_input:
+            self._rotation_steps[i] += 1
+            self.rewards[i] -= self._C_ROTATE * abs(rocket.rotation_input)
+        self.rewards[i] -= self._C_TIME
+
+        fuel_consumed = max(0.0, self._prev_fuel[i] - float(rocket.fuel))
+        self._prev_fuel[i] = float(rocket.fuel)
+        if rocket.fuel_max > 0.0:
+            self.rewards[i] -= (
+                self._C_FUEL_USAGE * fuel_consumed / rocket.fuel_max
+            )
+
+        normalized_radial_speed = radial_velocity / max(self._v_ref[i], 1e-9)
+        self.rewards[i] -= self._C_RADIAL_SPEED * min(
+            normalized_radial_speed**2, 4.0
+        )
+
+        # Falhas físicas têm precedência sobre o sucesso orbital.
+        if self._collides_with_host(rocket, host):
+            self._finish_rocket(i, "crash", self._TERMINAL_CRASH)
+            return
+        if radius > self._ESCAPE_R_FACTOR * host.radius:
+            self._finish_rocket(i, "escape", self._TERMINAL_ESCAPE)
+            return
+        if rocket.fuel <= 0.0:
+            self._finish_rocket(i, "fuel", self._TERMINAL_FUEL)
+            return
+        if self.steps[i] >= self._episode_max_steps:
+            self._finish_rocket(i, "timeout", self._TERMINAL_TIMEOUT)
+            return
+
+        if self._stable_progress[i] >= 2.0 * math.pi:
+            mean_radius_error = (
+                self._stable_error_sum[i] / self._stable_band_steps[i]
+                if self._stable_band_steps[i] else self._ACCEPTANCE_BAND
+            )
+            orbit_quality = _clamp(
+                1.0 - mean_radius_error / self._ACCEPTANCE_BAND, 0.0, 1.0
+            )
+            fuel_fraction = (
+                _clamp(rocket.fuel / rocket.fuel_max, 0.0, 1.0)
+                if rocket.fuel_max > 0.0 else 0.0
+            )
+            elapsed_fraction = _clamp(
+                1.0 - self.steps[i] / max(1, self._episode_max_steps), 0.0, 1.0
+            )
+            terminal_reward = (
+                self._TERMINAL_SUCCESS
+                + self._FUEL_BONUS_SCALE * fuel_fraction
+                + self._ORBIT_QUALITY_BONUS_SCALE * orbit_quality
+                + self._TIME_BONUS_SCALE * elapsed_fraction
+            )
+            self._finish_rocket(
+                i, "success", terminal_reward, orbit_quality=orbit_quality
+            )
+
+    @staticmethod
+    def _collides_with_host(rocket: Rocket, host) -> bool:
+        return collides(host, rocket)
 
     def _end_episode(self) -> None:
-        """@brief Acumula fitness do episódio; reinicia ou evolui."""
-        for i in range(len(self.rockets)):
-            self._gen_cumulative[i] += self.rewards[i]
-            reason = self.terminal_reasons[i] or "timeout"
-            self._gen_terminal_counts[reason] = (
-                self._gen_terminal_counts.get(reason, 0) + 1
+        """Guarda métricas por indivíduo antes que o próximo cenário seja criado."""
+        host = self.host
+        for i, rocket in enumerate(self.rockets):
+            snapshot = self._terminal_snapshots[i]
+            if snapshot is None:
+                radius, _, _, _ = self._relative_state(i)
+                target_radius = max(self._target_radii[i], 1e-9)
+                fuel_fraction = (
+                    _clamp(rocket.fuel / rocket.fuel_max, 0.0, 1.0)
+                    if rocket.fuel_max > 0.0 else 0.0
+                )
+                snapshot = {
+                    "terminal": self.terminal_reasons[i] or "timeout",
+                    "fuel_remaining_frac": fuel_fraction,
+                    "fuel_used_frac": 1.0 - fuel_fraction,
+                    "radius_over_target": radius / target_radius,
+                    "max_radius_over_target": self._max_radii[i] / target_radius,
+                    "peak_orbit_progress": _clamp(
+                        self._max_stable_progress[i] / (2.0 * math.pi), 0.0, 1.0
+                    ),
+                    "band_step_fraction": self._inside_band_steps[i] / max(1, self.steps[i]),
+                    "thrust_steps": self._thrust_steps[i],
+                    "rotation_steps": self._rotation_steps[i],
+                    "steps": self.steps[i],
+                    "orbit_quality": 0.0,
+                    "target_alpha": self._current_alpha,
+                }
+            self._gen_episode_records.append(
+                {"idx": i, "reward": float(self.rewards[i]), **snapshot}
             )
-            if self.undock_ok[i]:
-                self._gen_undock_ok += 1
-            if self.awarded_r_band[i]:
-                self._gen_r_band += 1
-            if self.awarded_smooth[i]:
-                self._gen_smooth += 1
 
-        self._gen_success_fuel.extend(self._episode_success_fuel)
-        self._gen_success_time.extend(self._episode_success_time)
-        self._gen_success_band.extend(self._episode_success_band)
-        self._gen_alphas.append(self._current_alpha)
-        self._gen_episodes_done += 1
-
-        if self._gen_episodes_done >= self.episodes_per_gen:
-            self._end_generation()
-        else:
-            self._start_episode()
+        super()._end_episode()
 
     def _end_generation(self) -> None:
-        """@brief Loga, evolui (ou encerra) e reconstrói o experimento."""
+        """Registra métricas, preserva a melhor geração e evolui a população."""
         if self.training_done:
             return
 
-        n = len(self._gen_cumulative)
-        fitness = [r / self.episodes_per_gen for r in self._gen_cumulative]
-        gen_dt = perf_counter() - self._gen_start_time
+        population_size = len(self._gen_cumulative)
+        divisor = max(1, self.episodes_per_gen)
+        fitness = [reward / divisor for reward in self._gen_cumulative]
+        elapsed = perf_counter() - self._gen_start_time
 
         best = max(fitness) if fitness else -math.inf
-        avg = (sum(fitness) / n) if n > 0 else -math.inf
-        composite = (
-            self._SELECTION_W_BEST * best + self._SELECTION_W_AVG * avg
-        ) if fitness else -math.inf
-
+        average = sum(fitness) / len(fitness) if fitness else -math.inf
+        composite = best + average if fitness else -math.inf
         if best > self._best_fitness_ever:
             self._best_fitness_ever = best
             self._best_fitness_gen = self.generation
 
-        if (composite > self._best_composite_score
-                and self.population is not None and fitness):
+        if (
+            composite > self._best_composite_score
+            and self.population is not None
+            and fitness
+        ):
             self._best_composite_score = composite
             self._best_composite_gen = self.generation
-            best_idx = max(range(n), key=lambda i: fitness[i])
+            best_idx = max(range(len(fitness)), key=lambda i: fitness[i])
             self._best_composite_fitness = fitness[best_idx]
             self._best_ever_state = {
-                k: v.detach().clone()
-                for k, v in self.population[best_idx].state_dict().items()
+                key: tensor.detach().clone()
+                for key, tensor in self.population[best_idx].state_dict().items()
             }
 
-        self._write_generation_log(fitness, gen_dt)
+        self._write_generation_log(fitness, elapsed)
 
-        total = n * self.episodes_per_gen
-        success = self._gen_terminal_counts.get("success", 0)
-        success_rate = (success / total) if total > 0 else 0.0
-        undock_rate = (self._gen_undock_ok / total) if total > 0 else 0.0
-        r_band_rate = (self._gen_r_band / total) if total > 0 else 0.0
-        smooth_rate = (self._gen_smooth / total) if total > 0 else 0.0
-        avg = (sum(fitness) / n) if n > 0 else 0.0
-        best = max(fitness) if fitness else 0.0
-
-        mean_fuel = (
-            sum(self._gen_success_fuel) / len(self._gen_success_fuel)
-            if self._gen_success_fuel else 0.0
+        records = self._gen_episode_records
+        successes = [row for row in records if row["terminal"] == "success"]
+        total_episodes = max(1, population_size * self.episodes_per_gen)
+        success_rate = len(successes) / total_episodes
+        mean_peak_orbit = _mean(
+            [float(row["peak_orbit_progress"]) for row in records]
         )
-        mean_band = (
-            sum(self._gen_success_band) / len(self._gen_success_band)
-            if self._gen_success_band else 0.0
+        mean_max_radius = _mean(
+            [float(row["max_radius_over_target"]) for row in records]
+        )
+        mean_fuel_used = _mean(
+            [float(row["fuel_used_frac"]) for row in records]
+        )
+        mean_success_fuel = _mean(
+            [float(row["fuel_used_frac"]) for row in successes]
         )
 
-        alpha_hi = self._current_alpha_hi()
         print(
-            f"[gen {self.generation:3d}] "
-            f"α∈[{self._ALPHA_MIN:.1f},{alpha_hi:.1f}]  "
-            f"best={best:+7.2f}  avg={avg:+7.2f}  comp={composite:+7.2f}  "
-            f"succ={success_rate:.0%}  undock={undock_rate:.0%}  "
-            f"rband={r_band_rate:.0%}  smooth={smooth_rate:.0%}  "
-            f"fuel={mean_fuel:.2f}  bfrac={mean_band:.2f}  "
-            f"mut={self._current_mutation_rate():.3f}  "
-            f"dt={gen_dt:.1f}s  term={self._gen_terminal_counts}"
+            f"[phase2 gen {self.generation:3d}] "
+            f"best={best:+8.2f} avg={average:+8.2f} comp={composite:+8.2f}  "
+            f"succ={success_rate:5.1%}  "
+            f"rmax/alvo={mean_max_radius if mean_max_radius is not None else 0.0:.3f}  "
+            f"órbita={mean_peak_orbit if mean_peak_orbit is not None else 0.0:.1%}  "
+            f"comb={mean_fuel_used if mean_fuel_used is not None else 0.0:.1%} "
+            f"(sucesso={mean_success_fuel if mean_success_fuel is not None else 0.0:.1%})  "
+            f"mut={self._current_mutation_rate():.3f} dt={elapsed:.1f}s  "
+            f"term={dict(self._gen_terminal_counts)}"
         )
 
         if self.generation + 1 >= self.max_generations or self.population is None:
@@ -479,637 +620,271 @@ class OrbitRaiseTrainer(Application):
             tournament_size=self._TOURNAMENT_SIZE,
         )
         self.networks = list(self.population)
-
         self.generation += 1
+
         self._gen_cumulative = [0.0] * len(self.networks)
-        self._reset_gen_state()
+        self._gen_terminal_counts = {}
+        self._gen_success_alignments = []
+        self._gen_success_fuel_fracs = []
+        self._gen_success_time_fracs = []
+        self._gen_episodes_done = 0
         self._gen_start_time = perf_counter()
+        self._gen_episode_records = []
+        self._gen_alpha_values = []
         self._start_episode()
 
-    def _current_mutation_rate(self) -> float:
-        """@brief Taxa de mutação linearmente decrescente."""
-        total = max(1, self.max_generations - 1)
-        p = min(1.0, self.generation / total)
-        return self.mutation_rate_start * (1.0 - p) + self.mutation_rate_end * p
-
-    def _current_alpha_hi(self) -> float:
-        """@brief Topo do range de α para a geração atual."""
-        progress = min(1.0, self.generation / max(1, self.max_generations - 1))
-        return (
-            self._ALPHA_MAX_START
-            + (self._ALPHA_MAX_END - self._ALPHA_MAX_START) * progress
-        )
-
-    def _spawn_host(
-        self, mass: float, radius: float, position: pygame.Vector2,
-    ) -> MassObject:
-        """@brief Cria e adiciona o host ao mundo."""
-        host = MassObject(
-            config=self.sim_config, mass=mass, radius=radius,
-            position=pygame.Vector2(position),
-            velocity=pygame.Vector2(0.0, 0.0),
-            color=(255, 200, 80),
-        )
-        self.world.add(host)
-        return host
-
-    def _spawn_rocket_docked(
-        self, host: MassObject, angle: float,
-    ) -> Rocket:
-        """@brief Cria um foguete acoplado a `host` no ângulo dado."""
-        rocket = Rocket(
-            config=self.sim_config,
-            mass=self.ROCKET_MASS,
-            position=pygame.Vector2(0.0, 0.0),
-            velocity=pygame.Vector2(0.0, 0.0),
-            alpha=self._current_alpha,
-            angle=angle,
-            body_length=self.ROCKET_BODY_LENGTH,
-            body_width=self.ROCKET_BODY_WIDTH,
-            nose_length=self.ROCKET_NOSE_LENGTH,
-            thrust_acceleration=self.ROCKET_THRUST_ACCELERATION,
-            color=self.ROCKET_COLOR,
-            nose_color=self.ROCKET_NOSE_COLOR,
-        )
-        self.world.add(rocket)
-        self.rockets.append(rocket)
-        rocket.dock_to(host, angle)
-        return rocket
-
-    def _build_observation_for(
-        self,
-        rocket: Rocket,
-        host: MassObject,
-        out: Optional[list[float]] = None,
-    ) -> Optional[list[float]]:
-        """@brief Vetor de 9 floats do DESIGN §3.
-
-        @param rocket Foguete observado.
-        @param host Corpo de referência.
-        @param out Buffer opcional reutilizável (tamanho ≥ 9).
-        @return Vetor preenchido, ou None em estados degenerados.
-        """
-        if out is None:
-            out = [0.0] * 9
-        if not rocket.active or not host.active:
-            return None
-
-        mu = self.sim_config.gravitational_constant * (host.mass + rocket.mass)
-        if mu <= 0.0:
-            return None
-        alpha = float(rocket.alpha)
-        if alpha <= 0.0:
-            return None
-        r_ref = alpha * host.radius
-        if r_ref <= 0.0:
-            return None
-
-        v_ref = math.sqrt(mu / r_ref)
-        a_g_ref = mu / (r_ref * r_ref)
-        omega_ref = v_ref / r_ref
-
-        rp_x = rocket.position.x - host.position.x
-        rp_y = rocket.position.y - host.position.y
-        r = math.sqrt(rp_x * rp_x + rp_y * rp_y)
-        if r <= 1e-12:
-            return None
-        rv_x = rocket.velocity.x - host.velocity.x
-        rv_y = rocket.velocity.y - host.velocity.y
-        v_r = (rp_x * rv_x + rp_y * rv_y) / r
-        h = rp_x * rv_y - rp_y * rv_x
-        v_t = h / r
-
-        nx = math.cos(rocket.angle)
-        ny = math.sin(rocket.angle)
-        cos_rel = max(-1.0, min(1.0, (nx * rp_x + ny * rp_y) / r))
-        sin_rel = (rp_x * ny - rp_y * nx) / r
-
-        docked = 1.0 if rocket.docked_to is not None else 0.0
-        fuel_frac = rocket.fuel / rocket.fuel_max if rocket.fuel_max > 0.0 else 0.0
-        thrust_ratio = rocket.thrust_acceleration / a_g_ref if a_g_ref > 0.0 else 1.0
-        rot_ratio = rocket.rotation_speed / omega_ref if omega_ref > 0.0 else 1.0
-        log_thrust = max(-1.0, min(2.0, math.log10(max(thrust_ratio, 1e-6))))
-        log_rot = max(-1.0, min(2.0, math.log10(max(rot_ratio, 1e-6))))
-
-        out[0] = r / r_ref
-        out[1] = v_r / v_ref
-        out[2] = v_t / v_ref
-        out[3] = sin_rel
-        out[4] = cos_rel
-        out[5] = docked
-        out[6] = fuel_frac
-        out[7] = log_thrust
-        out[8] = log_rot
-        return out
-
-    def _apply_network_action(
-        self, rocket: Rocket, network, obs: list[float],
+    def _write_generation_log(
+        self, fitness: list[float], gen_dt: float
     ) -> None:
-        """@brief Fast path de `control_with_network` para o hot loop."""
-        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
-        with torch.inference_mode():
-            actions, _, _ = network.select_action(
-                obs_tensor, deterministic=True
-            )
-        action = int(actions.item())
-        rotation_input, thrusting = Rocket.AI_ACTIONS[action]
-        rocket.set_control(rotation_input, thrusting)
-
-    def _potential(
-        self, r: float, v_r: float, v_t_abs: float,
-        r_ref: float, v_ref: float,
-    ) -> float:
-        """@brief Φ(s): quão perto da órbita circular alvo."""
-        if r_ref <= 0.0 or v_ref <= 0.0:
-            return 0.0
-        e_r = min(abs(r / r_ref - 1.0), self._PHI_CAP)
-        e_vr = min(abs(v_r) / v_ref, self._PHI_CAP)
-        e_vt = min(abs(v_t_abs / v_ref - 1.0), self._PHI_CAP)
-        return -(
-            self._PHI_R_SCALE * e_r
-            + self._PHI_VR_SCALE * e_vr
-            + self._PHI_VT_SCALE * e_vt
-        )
-
-    def _update_rewards(self) -> None:
-        """@brief Itera sobre foguetes vivos e aplica recompensa/terminais."""
-        for i in range(len(self.rockets)):
-            if not self.alive[i]:
-                continue
-            if not self.rockets[i].active:
-                self.alive[i] = False
-                self.terminal_reasons[i] = "destroyed"
-                continue
-            self._update_reward_for(i)
-
-    def _update_reward_for(self, i: int) -> None:
-        """@brief Recompensa, milestones e terminais do foguete `i`.
-
-        @details Ordem: shaping → custos → overshoot → milestones →
-        terminais. Milestones são cumulativos e disparam uma vez por
-        episódio. A cadeia terminal é estritamente monotônica em
-        qualidade de comportamento, garantindo que nenhum atrator
-        local (crash, escape, docked_timeout) domine a população.
-        """
-        rocket = self.rockets[i]
-        host = self.host
-        if host is None:
-            return
-
-        dx = rocket.position.x - host.position.x
-        dy = rocket.position.y - host.position.y
-        r_sq = dx * dx + dy * dy
-        if r_sq <= 1e-24:
-            self.alive[i] = False
-            self.terminal_reasons[i] = "crash"
-            self.rewards[i] += self._TERMINAL_CRASH
-            return
-        r = math.sqrt(r_sq)
-
-        rvx = rocket.velocity.x - host.velocity.x
-        rvy = rocket.velocity.y - host.velocity.y
-        v_r = (dx * rvx + dy * rvy) / r
-        h = dx * rvy - dy * rvx
-        v_t_abs = abs(h) / r
-
-        r_ref = self._r_ref[i]
-        v_ref = self._v_ref[i]
-
-        new_phi = self._potential(r, v_r, v_t_abs, r_ref, v_ref)
-        self.rewards[i] += new_phi - self.prev_phi[i]
-        self.prev_phi[i] = new_phi
-
-        # Custos de propulsão. `_C_ROTATE_THRUSTING` extra pune o
-        # padrão caótico "girar com motor ligado".
-        thrusting = rocket.thrusting
-        rotating = rocket.rotation_input != 0
-        self.rewards[i] -= self._C_THRUST if thrusting else 0.0
-        self.rewards[i] -= self._C_ROTATE if rotating else 0.0
-        if thrusting and rotating:
-            self.rewards[i] -= self._C_ROTATE_THRUSTING
-        self.rewards[i] -= self._C_TIME
-        self.steps[i] += 1
-
-        if rocket.docked_to is None:
-            self.ever_undocked[i] = True
-
-        # Overshoot: denso e marca permanentemente.
-        if r_ref > 0.0:
-            if r > r_ref * self._OVERSHOOT_FACTOR:
-                self.ever_overshot[i] = True
-                self.rewards[i] -= 2.0 * self._C_OVERSHOOT
-            elif r > r_ref * self._OVERSHOOT_PENALTY_FACTOR:
-                self.rewards[i] -= self._C_OVERSHOOT
-
-        # --- Milestone: undock.
-        if not self.awarded_undock[i] and r >= self._UNDOCK_R_FACTOR * host.radius:
-            self.awarded_undock[i] = True
-            self.undock_ok[i] = True
-            self.rewards[i] += self._MILESTONE_UNDOCK
-
-        # --- Milestone: approach (passou da zona rasa, sem overshoot).
-        if (self.ever_undocked[i]
-                and not self.awarded_approach[i]
-                and not self.ever_overshot[i]
-                and r >= self._APPROACH_R_MIN * host.radius
-                and r < self._APPROACH_R_MAX_FRAC * r_ref):
-            self.awarded_approach[i] = True
-            self.rewards[i] += self._MILESTONE_APPROACH
-
-        in_position = (
-            r_ref > 0.0 and abs(r / r_ref - 1.0) < self._STABLE_R_BAND
-        )
-        in_velocity = (
-            v_ref > 0.0
-            and abs(v_r) / v_ref < self._STABLE_V_BAND
-            and abs(v_t_abs / v_ref - 1.0) < self._STABLE_V_BAND
-        )
-        in_band = in_position and in_velocity
-        vr_frac = abs(v_r) / v_ref if v_ref > 0.0 else 1.0
-
-        # --- Milestone: r_band_touched. Qualquer entrada em r-band
-        # dispara uma vez, independentemente da velocidade. Dá crédito
-        # por "chegar na altitude certa" mesmo que ainda não esteja
-        # circularizado.
-        if in_position and not self.awarded_r_band[i]:
-            self.awarded_r_band[i] = True
-            self.rewards[i] += self._MILESTONE_R_BAND_TOUCHED
-
-        # --- Milestone: smooth_entry. Só dispara com `vr_frac` baixo
-        # e sem overshoot prévio — o sinal de "subida suave".
-        if (in_position
-                and not self.awarded_smooth[i]
-                and not self.ever_overshot[i]
-                and vr_frac < self._SMOOTH_VR_FRAC):
-            self.awarded_smooth[i] = True
-            self.rewards[i] += self._MILESTONE_SMOOTH_ENTRY
-
-        # Progresso angular (delta sempre computado; acumulado em banda).
-        angle = math.atan2(dy, dx)
-        prev = self.prev_angle[i]
-        if prev is not None:
-            delta = (angle - prev + math.pi) % (2.0 * math.pi) - math.pi
-        else:
-            delta = 0.0
-        self.prev_angle[i] = angle
-
-        if in_band:
-            self.in_band_steps[i] += 1
-            self.theta_accum[i] += delta
-
-            if (not self.awarded_quarter[i]
-                    and abs(self.theta_accum[i]) >= math.pi / 2):
-                self.awarded_quarter[i] = True
-                self.rewards[i] += self._MILESTONE_QUARTER
-            if (not self.awarded_half[i]
-                    and abs(self.theta_accum[i]) >= math.pi):
-                self.awarded_half[i] = True
-                self.rewards[i] += self._MILESTONE_HALF
-            if (not self.awarded_three_quarter[i]
-                    and abs(self.theta_accum[i]) >= 1.5 * math.pi):
-                self.awarded_three_quarter[i] = True
-                self.rewards[i] += self._MILESTONE_THREE_QUARTER
-        else:
-            self.theta_accum[i] = 0.0
-
-        # --- Terminais.
-        terminal: Optional[float] = None
-        reason: Optional[str] = None
-        s_fuel = s_time = s_band = None
-
-        if in_band and abs(self.theta_accum[i]) >= self._SUCCESS_ANGLE:
-            fuel_frac = (
-                rocket.fuel / rocket.fuel_max
-                if rocket.fuel_max > 0.0 else 0.0
-            )
-            time_frac = max(
-                0.0,
-                1.0 - self.steps[i] / max(1, self._episode_max_steps),
-            )
-            band_frac = self.in_band_steps[i] / max(1, self.steps[i])
-            terminal = (
-                self._TERMINAL_SUCCESS
-                + self._FUEL_BONUS_SCALE * fuel_frac
-                + self._TIME_BONUS_SCALE * time_frac
-            )
-            reason = "success"
-            s_fuel, s_time, s_band = fuel_frac, time_frac, band_frac
-
-        if terminal is None:
-            if collides(host, rocket):
-                speed = (host.velocity - rocket.velocity).length()
-                if not self.ever_undocked[i]:
-                    terminal, reason = self._TERMINAL_CRASH, "crash_docked"
-                elif speed >= self.sim_config.merge_min_relative_speed:
-                    terminal, reason = self._TERMINAL_CRASH, "crash"
-                else:
-                    terminal, reason = self._TERMINAL_REDOCKED, "fell_back"
-            elif r > self._ESCAPE_R_FACTOR * r_ref:
-                terminal, reason = self._TERMINAL_ESCAPE, "escape"
-            elif rocket.fuel <= 0.0:
-                terminal, reason = self._TERMINAL_FUEL, "fuel"
-            elif self.steps[i] >= self._episode_max_steps:
-                if not self.ever_undocked[i]:
-                    terminal = self._TERMINAL_DOCKED_TIMEOUT
-                    reason = "docked_timeout"
-                else:
-                    terminal = self._TERMINAL_TIMEOUT
-                    reason = "timeout"
-
-        if terminal is not None:
-            self.rewards[i] += terminal
-            self.alive[i] = False
-            self.terminal_reasons[i] = reason
-            if reason == "success":
-                self._episode_success_fuel.append(s_fuel)
-                self._episode_success_time.append(s_time)
-                self._episode_success_band.append(s_band)
-
-    def fixed_update(self, fixed_delta_time: float) -> None:
-        """@brief Passo físico: inferência → integração → recompensa.
-
-        @param fixed_delta_time Passo fixo em segundos.
-        """
-        self._episode_step += 1
-        host = self.host
-
-        if host is not None and host.active and self.networks:
-            for i, (rocket, network) in enumerate(zip(self.rockets, self.networks)):
-                if network is None or not rocket.active or not self.alive[i]:
-                    continue
-                obs = self._build_observation_for(rocket, host, out=self._obs_buffer)
-                if obs is None:
-                    continue
-                try:
-                    self._apply_network_action(rocket, network, obs)
-                except Exception as exc:
-                    print(f"[ai] erro de rede: {exc}")
-
-        bodies = self.world.entities
-        self.world.fixed_update(fixed_delta_time)
-        accel_model = CompositeAccelerationModel(self.gravity, bodies)
-        self.integrator.step(bodies, fixed_delta_time, accel_model)
-        for body in bodies:
-            body.post_integrate()
-
-        if host is not None and host.active:
-            self._update_rewards()
-
-        if (
-            not any(self.alive)
-            or self._episode_step >= self._episode_max_steps
-            or host is None
-            or not host.active
-        ):
-            for i in range(len(self.alive)):
-                if self.alive[i]:
-                    if not self.ever_undocked[i]:
-                        self.rewards[i] += self._TERMINAL_DOCKED_TIMEOUT
-                        if self.terminal_reasons[i] is None:
-                            self.terminal_reasons[i] = "docked_timeout"
-                    else:
-                        self.rewards[i] += self._TERMINAL_TIMEOUT
-                        if self.terminal_reasons[i] is None:
-                            self.terminal_reasons[i] = "timeout"
-                    self.alive[i] = False
-            self._end_episode()
-            return
-
-        self._resolve_merges()
-        self.world.purge_inactive()
-
-    def _resolve_merges(self) -> None:
-        """@brief Funde o host com foguetes em colisão destrutiva."""
-        host = self.host
-        if host is None or not host.active:
-            return
-        min_speed = self.sim_config.merge_min_relative_speed
-        for i, rocket in enumerate(self.rockets):
-            if not rocket.active or rocket is host or not self.alive[i]:
-                continue
-            if not collides(host, rocket):
-                continue
-            if (host.velocity - rocket.velocity).length() < min_speed:
-                continue
-            host.merge_with(rocket)
-
-    def _write_generation_log(self, fitness: list[float], gen_dt: float) -> None:
-        """@brief Anexa uma linha JSONL com as métricas da geração."""
-        host = self.host
-        if host is None or not fitness:
+        """Grava uma linha JSONL com estatísticas globais e de cada indivíduo."""
+        if not fitness:
             return
         self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        n = len(fitness)
-        sorted_f = sorted(fitness)
-        mean_f = sum(fitness) / n
-        var_f = sum((x - mean_f) ** 2 for x in fitness) / n
-        median_f = (
-            sorted_f[n // 2] if n % 2 == 1
-            else 0.5 * (sorted_f[n // 2 - 1] + sorted_f[n // 2])
+        ordered = sorted(fitness)
+        count = len(fitness)
+        average = sum(fitness) / count
+        variance = sum((value - average) ** 2 for value in fitness) / count
+        median = (
+            ordered[count // 2]
+            if count % 2
+            else (ordered[count // 2 - 1] + ordered[count // 2]) / 2.0
         )
+        records = self._gen_episode_records
+        successes = [row for row in records if row["terminal"] == "success"]
+        total = max(1, count * self.episodes_per_gen)
+        best_idx = max(range(count), key=lambda i: fitness[i])
 
-        total = n * self.episodes_per_gen
-        success = self._gen_terminal_counts.get("success", 0)
-        success_rate = (success / total) if total > 0 else 0.0
-        undock_rate = (self._gen_undock_ok / total) if total > 0 else 0.0
-        r_band_rate = (self._gen_r_band / total) if total > 0 else 0.0
-        smooth_rate = (self._gen_smooth / total) if total > 0 else 0.0
+        individuals = []
+        for i, score in enumerate(fitness):
+            own = [row for row in records if row["idx"] == i]
+            terminals = Counter(row["terminal"] for row in own)
+            individuals.append({
+                "idx": i,
+                "fitness": round(float(score), 4),
+                "successes": int(terminals.get("success", 0)),
+                "terminals": dict(terminals),
+                "mean_max_radius_over_target": round(
+                    _mean([float(row["max_radius_over_target"]) for row in own]) or 0.0, 4
+                ),
+                "mean_peak_orbit_progress": round(
+                    _mean([float(row["peak_orbit_progress"]) for row in own]) or 0.0, 4
+                ),
+                "mean_fuel_used_frac": round(
+                    _mean([float(row["fuel_used_frac"]) for row in own]) or 0.0, 4
+                ),
+                "mean_fuel_remaining_on_success": round(
+                    _mean([
+                        float(row["fuel_remaining_frac"])
+                        for row in own if row["terminal"] == "success"
+                    ]) or 0.0, 4
+                ),
+                "mean_band_step_fraction": round(
+                    _mean([float(row["band_step_fraction"]) for row in own]) or 0.0, 4
+                ),
+                "mean_thrust_steps": round(
+                    _mean([float(row["thrust_steps"]) for row in own]) or 0.0, 2
+                ),
+                "mean_rotation_steps": round(
+                    _mean([float(row["rotation_steps"]) for row in own]) or 0.0, 2
+                ),
+            })
 
-        mean_fuel = (
-            sum(self._gen_success_fuel) / len(self._gen_success_fuel)
-            if self._gen_success_fuel else None
-        )
-        mean_time = (
-            sum(self._gen_success_time) / len(self._gen_success_time)
-            if self._gen_success_time else None
-        )
-        mean_band = (
-            sum(self._gen_success_band) / len(self._gen_success_band)
-            if self._gen_success_band else None
-        )
+        def optional_mean(rows: list[dict], key: str) -> Optional[float]:
+            return _mean([float(row[key]) for row in rows])
 
-        best_idx = max(range(n), key=lambda i: fitness[i])
         entry = {
             "event": "generation",
             "phase": "orbit_raise",
             "gen": int(self.generation),
-            "episodes_per_net": self.episodes_per_gen,
-            "wall_time_s": round(gen_dt, 3),
-            "host_mass": round(float(host.mass), 2),
-            "host_radius": round(float(host.radius), 2),
-            "population_size": n,
-            "alpha_range": [self._ALPHA_MIN, round(self._current_alpha_hi(), 4)],
-            "gen_alphas": [round(a, 4) for a in self._gen_alphas],
+            "episodes_per_net": int(self.episodes_per_gen),
+            "wall_time_s": round(float(gen_dt), 3),
+            "population_size": count,
+            "target_alpha_range": (
+                [round(min(self._gen_alpha_values), 4), round(max(self._gen_alpha_values), 4)]
+                if self._gen_alpha_values else None
+            ),
+            "initial_radius_factor_range": list(self._INITIAL_RADIUS_FACTOR_RANGE),
+            "acceptance_band_fraction": self._ACCEPTANCE_BAND,
+            "required_stable_angular_progress_rad": round(2.0 * math.pi, 6),
+            "timeout_target_orbits": self._TIMEOUT_TARGET_ORBITS,
             "fitness": {
-                "best": round(float(sorted_f[-1]), 4),
-                "avg": round(float(mean_f), 4),
-                "median": round(float(median_f), 4),
-                "std": round(float(math.sqrt(var_f)), 4),
-                "min": round(float(sorted_f[0]), 4),
+                "best": round(float(ordered[-1]), 4),
+                "avg": round(float(average), 4),
+                "median": round(float(median), 4),
+                "std": round(float(math.sqrt(variance)), 4),
+                "min": round(float(ordered[0]), 4),
             },
-            "success_rate": round(float(success_rate), 4),
-            "undock_ok_rate": round(float(undock_rate), 4),
-            "r_band_touched_rate": round(float(r_band_rate), 4),
-            "smooth_entry_rate": round(float(smooth_rate), 4),
-            "mean_fuel_frac_at_success": (
-                round(float(mean_fuel), 4) if mean_fuel is not None else None
-            ),
-            "mean_time_frac_at_success": (
-                round(float(mean_time), 4) if mean_time is not None else None
-            ),
-            "mean_band_frac_at_success": (
-                round(float(mean_band), 4) if mean_band is not None else None
-            ),
+            "success_rate": round(len(successes) / total, 4),
+            "metrics": {
+                "mean_max_radius_over_target": round(
+                    optional_mean(records, "max_radius_over_target") or 0.0, 4
+                ),
+                "mean_peak_orbit_progress": round(
+                    optional_mean(records, "peak_orbit_progress") or 0.0, 4
+                ),
+                "mean_fuel_used_frac": round(
+                    optional_mean(records, "fuel_used_frac") or 0.0, 4
+                ),
+                "mean_fuel_used_frac_on_success": round(
+                    optional_mean(successes, "fuel_used_frac") or 0.0, 4
+                ),
+                "mean_fuel_remaining_frac_on_success": round(
+                    optional_mean(successes, "fuel_remaining_frac") or 0.0, 4
+                ),
+                "mean_band_step_fraction": round(
+                    optional_mean(records, "band_step_fraction") or 0.0, 4
+                ),
+                "mean_thrust_steps": round(
+                    optional_mean(records, "thrust_steps") or 0.0, 2
+                ),
+                "mean_rotation_steps": round(
+                    optional_mean(records, "rotation_steps") or 0.0, 2
+                ),
+            },
             "terminals": dict(self._gen_terminal_counts),
             "best_idx": int(best_idx),
             "best_fitness_ever": (
                 round(float(self._best_fitness_ever), 4)
                 if self._best_fitness_ever != -math.inf else None
             ),
-            "best_fitness_gen": (
-                int(self._best_fitness_gen) if self._best_fitness_gen >= 0 else None
-            ),
+            "best_fitness_gen": self._best_fitness_gen if self._best_fitness_gen >= 0 else None,
             "best_composite_score": (
                 round(float(self._best_composite_score), 4)
                 if self._best_composite_score != -math.inf else None
             ),
-            "best_composite_gen": (
-                int(self._best_composite_gen) if self._best_composite_gen >= 0 else None
-            ),
-            "best_composite_fitness": (
-                round(float(self._best_composite_fitness), 4)
-                if self._best_composite_fitness != -math.inf else None
-            ),
-            "individuals": [
-                {"idx": i, "fitness": round(float(fitness[i]), 4)}
-                for i in range(n)
-            ],
+            "best_composite_gen": self._best_composite_gen if self._best_composite_gen >= 0 else None,
+            "individuals": individuals,
         }
-
-        with self.log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-    def update(self, delta_time: float) -> None:
-        """@brief Zoom, pan e ajuste do `speed_multiplier` (←/→)."""
-        if self.input.mouse_wheel != 0:
-            self.camera.zoom_at(self.input.mouse_position, 1.1 ** self.input.mouse_wheel)
-        if self.input.was_pressed(pygame.K_RIGHT):
-            self.speed_multiplier = min(8.0, self.speed_multiplier + 0.5)
-        if self.input.was_pressed(pygame.K_LEFT):
-            self.speed_multiplier = max(1.0, self.speed_multiplier - 0.5)
-        if self.input.is_mouse_button_down(pygame.BUTTON_LEFT):
-            self.camera.move(-self.input.mouse_delta / self.camera.zoom)
+        with self.log_path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def render(self, renderer) -> None:
-        """@brief Desenha alvo, banda, mundo e HUD do treino."""
+        """Mostra a órbita-alvo, a banda de tolerância e o estado do treino."""
         alpha = self.clock.interpolation_alpha
-
         host = self.host
-        if host is not None and host.active and self._current_alpha > 0.0:
+        if host is not None and host.active:
             center = self.camera.world_to_screen(host.position)
-            r = self.camera.world_to_screen_size(self._current_alpha * host.radius)
-            renderer.draw_circle((100, 200, 255), center, r, width=1)
-            for f in (1.0 - self._STABLE_R_BAND, 1.0 + self._STABLE_R_BAND):
-                renderer.draw_circle(
-                    (80, 140, 190), center,
-                    self.camera.world_to_screen_size(
-                        self._current_alpha * host.radius * f
-                    ),
-                    width=1,
-                )
+            target_radius = self._current_alpha * host.radius
+            low_radius = target_radius * (1.0 - self._ACCEPTANCE_BAND)
+            high_radius = target_radius * (1.0 + self._ACCEPTANCE_BAND)
+            renderer.draw_circle(
+                (100, 200, 255), center,
+                self.camera.world_to_screen_size(target_radius), width=2,
+            )
+            renderer.draw_circle(
+                (70, 130, 170), center,
+                self.camera.world_to_screen_size(low_radius), width=1,
+            )
+            renderer.draw_circle(
+                (70, 130, 170), center,
+                self.camera.world_to_screen_size(high_radius), width=1,
+            )
 
         self.world.render(renderer, self.camera, alpha)
-
-        n_alive = sum(self.alive) if self.alive else 0
-        n_total = len(self.alive) if self.alive else 0
+        alive_count = sum(self.alive) if self.alive else 0
+        total_count = len(self.alive) if self.alive else 0
+        peak_progress = (
+            max(self._max_stable_progress) / (2.0 * math.pi)
+            if self._max_stable_progress else 0.0
+        )
 
         renderer.draw_text(
-            f"Fase 2 — Órbita Maior   Gen {self.generation + 1}/{self.max_generations}",
+            f"Fase 2 — Órbita maior   Gen {self.generation + 1}/{self.max_generations}",
             (10, 10), size=26, color=(255, 255, 255),
         )
         renderer.draw_text(
-            f"α={self._current_alpha:.2f}  "
-            f"Ep {self._gen_episodes_done + 1}/{self.episodes_per_gen}  "
-            f"Vivos {n_alive}/{n_total}  "
-            f"step {self._episode_step}/{self._episode_max_steps}",
-            (10, 42), size=22, color=(180, 220, 255),
+            f"Episódio {self._gen_episodes_done + 1}/{self.episodes_per_gen}   "
+            f"Vivos {alive_count}/{total_count}   step {self._episode_step}/{self._episode_max_steps}",
+            (10, 42), size=21, color=(180, 220, 255),
         )
         renderer.draw_text(
-            f"Velocidade = {self.speed_multiplier:.2f}x",
-            (10, 74), size=20, color=(140, 220, 140),
+            f"Alvo: r = {self._current_alpha:.2f} R_host   banda ±{self._ACCEPTANCE_BAND:.0%}   "
+            f"progresso estável máx. {peak_progress:.0%}",
+            (10, 73), size=19, color=(255, 220, 120),
         )
         renderer.draw_text(
-            f"Meta: {self._SUCCESS_ANGLE:.2f} rad em banda  "
-            f"(|Δr|/r<{self._STABLE_R_BAND}  |v|/v_ref∈1±{self._STABLE_V_BAND})",
-            (10, 104), size=18, color=(255, 220, 120),
+            f"Velocidade = {self.speed_multiplier:.2f}x   "
+            f"timeout = {self._TIMEOUT_TARGET_ORBITS:.2f} períodos-alvo",
+            (10, 102), size=18, color=(140, 220, 140),
         )
 
     def _save_best_ever(self) -> None:
-        """@brief Salva em `phase2_best.pt` a melhor rede da sessão."""
+        """Salva a melhor rede encontrada na Fase 2."""
         if self._best_ever_state is None:
-            print("[shutdown] nenhuma geração concluída — nada a salvar.")
+            print("[shutdown] Fase 2 sem geração concluída; nada a salvar.")
             return
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             path = self.output_dir / "phase2_best.pt"
             torch.save(self._best_ever_state, path)
             print(
-                f"[save] melhor rede da Fase 2:\n"
-                f"        composite = {self._best_composite_score:+.2f} "
-                f"(gen {self._best_composite_gen})\n"
-                f"        fitness individual = {self._best_composite_fitness:+.2f}\n"
-                f"        recorde individual global = {self._best_fitness_ever:+.2f} "
-                f"(gen {self._best_fitness_gen})\n"
-                f"        → {path}"
+                f"[save] melhor rede da Fase 2: composite={self._best_composite_score:+.2f} "
+                f"(gen {self._best_composite_gen}), "
+                f"fitness={self._best_composite_fitness:+.2f} -> {path}"
             )
         except Exception as exc:
-            print(f"[shutdown] falha ao salvar: {exc}")
-
-    def shutdown(self) -> None:
-        """@brief Encerra a sessão salvando a melhor rede. Idempotente."""
-        if self._shutdown_done:
-            return
-        self._shutdown_done = True
-        self._save_best_ever()
-        super().shutdown()
+            print(f"[shutdown] falha ao salvar checkpoint da Fase 2: {exc}")
 
 
 def load_population_from_phase1(
-    checkpoint_path: Path,
+    checkpoint: str | Path,
     size: int,
-    seed: int,
-    elite_count: int = 15,
-    diversity_std: float = 0.01,
+    seed: int = 42,
+    elite_count: int = 5,
+    diversity_std: float = 0.02,
 ) -> NeuralPopulation:
-    """@brief População warm-start a partir de um checkpoint `.pt`.
+    """Cria população de fine-tuning a partir de ``phase1_best.pt``.
 
-    @details Os `elite_count` primeiros carregam os pesos exatos
-    (skill preservado); os demais recebem os mesmos pesos + ruído
-    N(0, diversity_std²) por parâmetro.
-
-    @param checkpoint_path Caminho do `.pt`.
-    @param size Tamanho da população.
-    @param seed Semente mestra (e do gerador de ruído).
-    @param elite_count Indivíduos com pesos intactos.
-    @param diversity_std Desvio-padrão do ruído por parâmetro.
-    @return População pronta para treino.
+    ``elite_count`` redes preservam exatamente os pesos da Fase 1. As demais
+    recebem ruído gaussiano pequeno para iniciar uma busca evolutiva local.
+    O formato de entrada esperado é o ``state_dict`` salvo pela Fase 1.
     """
-    pop = NeuralPopulation(size=size, seed=seed)
-    state = torch.load(checkpoint_path, map_location="cpu")
-    if isinstance(state, dict) and "model" in state:
-        state = state["model"]
+    checkpoint_path = Path(checkpoint)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"checkpoint da Fase 1 não encontrado: {checkpoint_path}")
+    if size < 1:
+        raise ValueError("size deve ser >= 1.")
+    if elite_count < 0 or elite_count > size:
+        raise ValueError(f"elite_count deve estar entre 0 e {size}.")
+    if diversity_std < 0.0:
+        raise ValueError("diversity_std não pode ser negativo.")
 
-    generator = torch.Generator().manual_seed(seed + 1000)
-    for i, net in enumerate(pop):
-        net.load_state_dict(state)
-        net.eval()
-        if i < elite_count:
-            continue
-        with torch.no_grad():
-            for param in net.parameters():
-                noise = torch.randn(
-                    param.shape, generator=generator, dtype=param.dtype,
-                ) * diversity_std
-                param.add_(noise)
-    return pop
+    try:
+        payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    except TypeError:  # compatibilidade com versões anteriores do PyTorch
+        payload = torch.load(checkpoint_path, map_location="cpu")
+
+    if isinstance(payload, dict) and "state_dict" in payload:
+        state_dict = payload["state_dict"]
+    elif isinstance(payload, dict) and "model_state_dict" in payload:
+        state_dict = payload["model_state_dict"]
+    else:
+        state_dict = payload
+    if not isinstance(state_dict, dict) or not state_dict:
+        raise ValueError(
+            f"checkpoint inválido: esperado state_dict não vazio em {checkpoint_path}"
+        )
+
+    population = NeuralPopulation(size=size, seed=seed)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(seed))
+
+    for index, network in enumerate(population):
+        network.load_state_dict(state_dict, strict=True)
+        network.eval()
+        if index >= elite_count and diversity_std > 0.0:
+            with torch.no_grad():
+                for parameter in network.parameters():
+                    noise = torch.randn(
+                        parameter.shape,
+                        generator=generator,
+                        dtype=parameter.dtype,
+                        device=parameter.device,
+                    )
+                    parameter.add_(noise * diversity_std)
+
+    print(
+        f"[warm-start] {elite_count} elites clonadas de {checkpoint_path}; "
+        f"{size - elite_count} indivíduos diversificados (std={diversity_std:.3f})."
+    )
+    return population
