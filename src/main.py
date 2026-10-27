@@ -56,20 +56,20 @@ class Gravitation(Application):
     _STAR_ORBIT_RADIUS_RANGE = (1200.0, 2000.0)
 
     # --- Planetas -----------------------------------------------------
-    _PLANET_COUNT_RANGE = (0, 0)
+    _PLANET_COUNT_RANGE = (1, 3)
     _PLANET_MASS_RANGE = (20_000.0, 60_000.0)
     _PLANET_RADIUS_RANGE = (100.0, 140.0)
-    _PLANET_BASE_ORBIT_FACTOR = 4.0
+    _PLANET_BASE_ORBIT_FACTOR = 5.0
     _PLANET_ORBIT_STEP_FACTOR = 1.0
 
     # --- Luas ---------------------------------------------------------
-    _MOON_COUNT_RANGE = (0, 0)
+    _MOON_COUNT_RANGE = (1, 2)
     _MOON_MASS_RANGE = (300.0, 800.0)
     _MOON_RADIUS_RANGE = (22.0, 35.0)
     _MOON_ORBIT_FACTOR_RANGE = (3.5, 6.0)
 
     # --- Meteoros -----------------------------------------------------
-    _METEOR_COUNT_RANGE = (0, 0)
+    _METEOR_COUNT_RANGE = (3, 4)
     _METEOR_MASS_RANGE = (10.0, 40.0)
     _METEOR_RADIUS_RANGE = (4.0, 8.0)
     _METEOR_ECCENTRICITY_RANGE = (0.6, 0.9)
