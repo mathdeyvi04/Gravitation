@@ -1,19 +1,27 @@
-"""Fase 2 — Órbita Maior: aprender a subir suavemente e manter órbita.
+"""Fase 2 — Órbita Maior: subir suavemente e manter órbita.
 
-Herda a habilidade de desacoplar da Fase 1 via warm-start. Cada
-episódio começa acoplado e tem α sorteado no range do currículo.
+Herda o skill de desacoplar via warm-start. Currículo de α cresce de
+[1.5, 2.5] até [1.5, 5.0] ao longo do treino.
 
-Estrutura de recompensa (após correções):
-- Milestones pagam progresso: undock → approach → smooth-entry →
-  position → velocity → quarter → half → success.
-- `smooth_entry` (+400) só dispara se o foguete entrar na r-band com
-  `|v_r|/v_ref < 0.15` e **nunca tiver feito overshoot** (r > 1.25·r_ref).
-  Isso força a política a aprender a subida suave, não "explode e
-  desacelera".
-- Overshoot é punido diretamente: -0.20/passo acima de 1.15·r_ref e
-  -0.40/passo acima de 1.25·r_ref.
-- Denso em banda é pequeno (0.02) para que timeout (−250) nunca
-  compense o sucesso terminal (+300 + bônus).
+Sinal de recompensa único por milestone, sem densos em posição/banda.
+O único sinal denso é o shaping Φ (telescópico) + custos de propulsão.
+
+Escada de milestones (cada um dispara uma vez por episódio):
+  +100  undock (r ≥ 1.5·R)
+  +40   approach (r/r_ref ∈ [0.86, 0.95], sem overshoot)
+  +200  smooth_entry (r-band com |v_r|/v_ref < 0.15, sem overshoot)
+  +300  quarter (π/2 em banda)
+  +400  half (π em banda)
+  +500  three_quarter (3π/2 em banda)
+  +1000 success (2π em banda, terminal)
+
+Uma escada de ~1500 pontos entre "smooth entry" e "órbita completa",
+o que domina qualquer ganho marginal por "ficar em posição" e força
+o GA a progredir em vez de estacionar.
+
+Custos de propulsão caros (thrust=0.02/passo, rotate+thrust extra
++0.02/passo) — sem eles, "girar com motor ligado" ficava barato e
+o GA aprendia trajetórias caóticas.
 """
 
 import json
@@ -55,9 +63,12 @@ class OrbitRaiseTrainer(Application):
     _HOST_MASS_RANGE = (400_000.0, 700_000.0)
     _HOST_RADIUS_RANGE = (500.0, 540.0)
 
+    # Currículo α: [1.5, 2.5] → [1.5, 5.0]. Começar em 2.5 dá tempo
+    # para o GA consolidar antes de esticar. α=1.5 preserva o alvo
+    # da Fase 1 (warm-start útil).
     _ALPHA_MIN = 1.5
-    _ALPHA_MAX_START = 1.7
-    _ALPHA_MAX_END = 2.2
+    _ALPHA_MAX_START = 2.5
+    _ALPHA_MAX_END = 5.0
 
     _STABLE_R_BAND = 0.12
     _STABLE_V_BAND = 0.20
@@ -67,66 +78,58 @@ class OrbitRaiseTrainer(Application):
     _ESCAPE_R_FACTOR = 3.0
     _UNDOCK_R_FACTOR = 1.5
 
-    # --- Milestones.
-    # O undock vale menos que a soma total; se valesse muito, "só
-    # desacoplar e morrer" seria competitivo contra "tentar chegar".
+    # --- Milestones (uma vez cada por episódio).
     _MILESTONE_UNDOCK = 100.0
     _MILESTONE_APPROACH = 40.0
-    _MILESTONE_POSITION = 100.0
-    _MILESTONE_VELOCITY = 120.0
-    _MILESTONE_QUARTER = 60.0
-    _MILESTONE_HALF = 120.0
+    _MILESTONE_SMOOTH_ENTRY = 200.0
+    _MILESTONE_QUARTER = 300.0
+    _MILESTONE_HALF = 400.0
+    _MILESTONE_THREE_QUARTER = 500.0
 
-    # --- Smooth entry: o sinal que ensina "subir suavemente".
-    # Só dispara se o foguete chegar na r-band com |v_r| baixo e sem
-    # ter feito overshoot. Uma única vez por episódio.
-    _MILESTONE_SMOOTH_ENTRY = 400.0
+    # Smooth entry: `|v_r|/v_ref` abaixo deste limiar na primeira
+    # entrada na r-band, sem overshoot prévio.
     _SMOOTH_VR_FRAC = 0.15
 
-    # Zona "approaching": alvo intermediário entre o undock e a banda.
+    # Approach: alvo intermediário entre o undock e a r-band.
     _APPROACH_R_MIN = 1.2
     _APPROACH_R_MAX_FRAC = 0.95
 
-    # --- Overshoot. Rastreamos "passou do alvo" e punimos
-    # proporcionalmente à distância em relação a r_ref. Sem isso, o
-    # GA encontra "thrustar até 2× r_ref, coastar de volta" como uma
-    # estratégia barata — é o comportamento que queremos eliminar.
-    _OVERSHOOT_PENALTY_FACTOR = 1.15
+    # Overshoot. Punido densamente e bloqueia `smooth_entry`
+    # permanentemente. A punição dobra acima de `_OVERSHOOT_FACTOR`.
+    _OVERSHOOT_PENALTY_FACTOR = 1.10
     _OVERSHOOT_FACTOR = 1.25
-    _C_OVERSHOOT = 0.20
+    _C_OVERSHOOT = 0.50
 
-    # --- Shaping. `Φ_VR` alto (100) torna |v_r|/v_ref caro perto de
-    # r_ref — força frear cedo em vez de thrustar-e-passar.
+    # Shaping. `Φ_VR` alto é o que ensina subida suave — |v_r| alto
+    # perto de r_ref custa caro, forçando frear antes do alvo.
     _PHI_R_SCALE = 60.0
     _PHI_VR_SCALE = 100.0
     _PHI_VT_SCALE = 80.0
     _PHI_CAP = 1.0
 
-    # --- Denso. Pequeno para não ser "farmável"; o terminal precisa
-    # dominar. Antes em 0.08, permitia timeout lucrativo.
-    _C_IN_BAND = 0.02
-    _C_IN_POSITION = 0.005
+    # Custos de propulsão. `thrust` domina — é o que ensina
+    # "mínimo de combustível". `rotate+thrust simultâneos` adiciona
+    # extra porque é o padrão caótico que queremos eliminar.
+    _C_THRUST = 0.02
+    _C_ROTATE = 0.002
+    _C_ROTATE_THRUSTING = 0.02
+    _C_TIME = 0.0005
 
-    _C_THRUST = 0.005
-    _C_ROTATE = 0.001
-    _C_TIME = 0.0002
-
-    # --- Terminais. `docked_timeout` é o pior (−400) para empurrar
-    # a política a tentar; timeout (−250) é pior que sucesso (+300)
-    # mesmo descontando o acúmulo denso.
-    _TERMINAL_SUCCESS = +300.0
-    _TERMINAL_CRASH = -120.0
-    _TERMINAL_REDOCKED = -30.0
-    _TERMINAL_ESCAPE = -200.0
-    _TERMINAL_FUEL = -80.0
+    # Terminais.
+    _TERMINAL_SUCCESS = 1000.0
+    _TERMINAL_CRASH = -150.0
+    _TERMINAL_REDOCKED = -50.0
+    _TERMINAL_ESCAPE = -300.0
+    _TERMINAL_FUEL = -100.0
     _TERMINAL_TIMEOUT = -250.0
-    _TERMINAL_DOCKED_TIMEOUT = -400.0
+    _TERMINAL_DOCKED_TIMEOUT = -500.0
 
-    _FUEL_BONUS_SCALE = 60.0
+    _FUEL_BONUS_SCALE = 100.0
     _TIME_BONUS_SCALE = 30.0
 
-    _TIMEOUT_ORBITS = 3.0
-    _MAX_EPISODE_STEPS = 10_000
+    # Timeout: 2 órbitas temáticas (cap em 20k steps para α=5).
+    _TIMEOUT_ORBITS = 2.0
+    _MAX_EPISODE_STEPS = 20_000
 
     _TOURNAMENT_SIZE = 3
     _SELECTION_W_BEST = 1.0
@@ -187,10 +190,9 @@ class OrbitRaiseTrainer(Application):
         self.awarded_undock: list[bool] = []
         self.awarded_approach: list[bool] = []
         self.awarded_smooth: list[bool] = []
-        self.awarded_position: list[bool] = []
-        self.awarded_velocity: list[bool] = []
         self.awarded_quarter: list[bool] = []
         self.awarded_half: list[bool] = []
+        self.awarded_three_quarter: list[bool] = []
 
         self.in_band_steps: list[int] = []
         self._r_ref: list[float] = []
@@ -208,6 +210,7 @@ class OrbitRaiseTrainer(Application):
         self._gen_cumulative: list[float] = []
         self._gen_terminal_counts: dict[str, int] = {}
         self._gen_undock_ok = 0
+        self._gen_band_entries = 0
         self._gen_success_fuel: list[float] = []
         self._gen_success_time: list[float] = []
         self._gen_success_band: list[float] = []
@@ -249,6 +252,7 @@ class OrbitRaiseTrainer(Application):
     def _reset_gen_state(self) -> None:
         self._gen_terminal_counts = {}
         self._gen_undock_ok = 0
+        self._gen_band_entries = 0
         self._gen_success_fuel = []
         self._gen_success_time = []
         self._gen_success_band = []
@@ -313,10 +317,9 @@ class OrbitRaiseTrainer(Application):
         self.awarded_undock = [False] * n
         self.awarded_approach = [False] * n
         self.awarded_smooth = [False] * n
-        self.awarded_position = [False] * n
-        self.awarded_velocity = [False] * n
         self.awarded_quarter = [False] * n
         self.awarded_half = [False] * n
+        self.awarded_three_quarter = [False] * n
 
         self.in_band_steps = [0] * n
         self._episode_success_fuel = []
@@ -374,6 +377,8 @@ class OrbitRaiseTrainer(Application):
             )
             if self.undock_ok[i]:
                 self._gen_undock_ok += 1
+            if self.awarded_smooth[i]:
+                self._gen_band_entries += 1
 
         self._gen_success_fuel.extend(self._episode_success_fuel)
         self._gen_success_time.extend(self._episode_success_time)
@@ -422,6 +427,7 @@ class OrbitRaiseTrainer(Application):
         success = self._gen_terminal_counts.get("success", 0)
         success_rate = (success / total) if total > 0 else 0.0
         undock_rate = (self._gen_undock_ok / total) if total > 0 else 0.0
+        band_rate = (self._gen_band_entries / total) if total > 0 else 0.0
         avg = (sum(fitness) / n) if n > 0 else 0.0
         best = max(fitness) if fitness else 0.0
 
@@ -440,7 +446,8 @@ class OrbitRaiseTrainer(Application):
             f"α∈[{self._ALPHA_MIN:.1f},{alpha_hi:.1f}]  "
             f"best={best:+7.2f}  avg={avg:+7.2f}  comp={composite:+7.2f}  "
             f"succ={success_rate:.0%}  undock={undock_rate:.0%}  "
-            f"fuel={mean_fuel:.2f}  band={mean_band:.2f}  "
+            f"band={band_rate:.0%}  "
+            f"fuel={mean_fuel:.2f}  bfrac={mean_band:.2f}  "
             f"mut={self._current_mutation_rate():.3f}  "
             f"dt={gen_dt:.1f}s  term={self._gen_terminal_counts}"
         )
@@ -627,10 +634,10 @@ class OrbitRaiseTrainer(Application):
         """@brief Recompensa, milestones e terminais do foguete `i`.
 
         @details Ordem: shaping → custos → overshoot → milestones →
-        terminais. A escada de milestones paga progresso incremental
-        e `_MILESTONE_SMOOTH_ENTRY` só dispara se a primeira entrada
-        na r-band ocorreu com `|v_r|/v_ref < _SMOOTH_VR_FRAC` e sem
-        overshoot — o sinal que ensina "subida suave".
+        terminais. Sem densos em posição/banda — o único sinal denso
+        é o shaping Φ (telescópico) e os custos de propulsão. A
+        escada de milestones premia progresso real (chegar na banda
+        suavemente, mantê-la por ângulos crescentes), não "existir".
         """
         rocket = self.rockets[i]
         host = self.host
@@ -660,17 +667,24 @@ class OrbitRaiseTrainer(Application):
         self.rewards[i] += new_phi - self.prev_phi[i]
         self.prev_phi[i] = new_phi
 
-        self.rewards[i] -= self._C_THRUST if rocket.thrusting else 0.0
-        self.rewards[i] -= self._C_ROTATE * abs(rocket.rotation_input)
+        # Custos de propulsão. `_C_ROTATE_THRUSTING` é um extra quando
+        # o foguete gira E thrusta no mesmo passo — o padrão caótico
+        # que queremos eliminar. Nenhum desses custos tem "teto"; um
+        # foguete que thrusta sem parar sangra 0.02 × steps.
+        thrusting = rocket.thrusting
+        rotating = rocket.rotation_input != 0
+        self.rewards[i] -= self._C_THRUST if thrusting else 0.0
+        self.rewards[i] -= self._C_ROTATE if rotating else 0.0
+        if thrusting and rotating:
+            self.rewards[i] -= self._C_ROTATE_THRUSTING
         self.rewards[i] -= self._C_TIME
         self.steps[i] += 1
 
         if rocket.docked_to is None:
             self.ever_undocked[i] = True
 
-        # Overshoot: rastreia "passou do alvo" e pune proporcionalmente.
-        # A punição dobra acima de `_OVERSHOOT_FACTOR` — desencoraja
-        # fortemente o comportamento "thrust até 2× r_ref, coastar".
+        # Overshoot: punido densamente e marca permanentemente —
+        # bloqueia `smooth_entry`.
         if r_ref > 0.0:
             if r > r_ref * self._OVERSHOOT_FACTOR:
                 self.ever_overshot[i] = True
@@ -678,15 +692,17 @@ class OrbitRaiseTrainer(Application):
             elif r > r_ref * self._OVERSHOOT_PENALTY_FACTOR:
                 self.rewards[i] -= self._C_OVERSHOOT
 
-        # --- Milestone T1: undock.
+        # --- Milestone: undock.
         if not self.awarded_undock[i] and r >= self._UNDOCK_R_FACTOR * host.radius:
             self.awarded_undock[i] = True
             self.undock_ok[i] = True
             self.rewards[i] += self._MILESTONE_UNDOCK
 
-        # --- Milestone T2: approach (passou da zona "rasa").
+        # --- Milestone: approach (passou da zona rasa, ainda abaixo
+        # da r-band, sem overshoot).
         if (self.ever_undocked[i]
                 and not self.awarded_approach[i]
+                and not self.ever_overshot[i]
                 and r >= self._APPROACH_R_MIN * host.radius
                 and r < self._APPROACH_R_MAX_FRAC * r_ref):
             self.awarded_approach[i] = True
@@ -704,9 +720,8 @@ class OrbitRaiseTrainer(Application):
 
         vr_frac = abs(v_r) / v_ref if v_ref > 0.0 else 1.0
 
-        # --- Milestone T2.5: smooth entry. Só dispara na PRIMEIRA
-        # entrada em r-band com v_r baixo e sem overshoot prévio.
-        # É o sinal mais forte contra "explode e desacelera".
+        # --- Milestone: smooth_entry. Exige `vr_frac` baixo e
+        # nenhum overshoot. É o que ensina "subida suave".
         if (in_position
                 and not self.awarded_smooth[i]
                 and not self.ever_overshot[i]
@@ -714,16 +729,7 @@ class OrbitRaiseTrainer(Application):
             self.awarded_smooth[i] = True
             self.rewards[i] += self._MILESTONE_SMOOTH_ENTRY
 
-        # --- Milestone T3: position.
-        if in_position and not self.awarded_position[i]:
-            self.awarded_position[i] = True
-            self.rewards[i] += self._MILESTONE_POSITION
-
-        # --- Milestone T4: velocity (orbit-shaped).
-        if in_band and not self.awarded_velocity[i]:
-            self.awarded_velocity[i] = True
-            self.rewards[i] += self._MILESTONE_VELOCITY
-
+        # Progresso angular (delta computado sempre; acumulado só em banda).
         angle = math.atan2(dy, dx)
         prev = self.prev_angle[i]
         if prev is not None:
@@ -732,11 +738,7 @@ class OrbitRaiseTrainer(Application):
             delta = 0.0
         self.prev_angle[i] = angle
 
-        if in_position:
-            self.rewards[i] += self._C_IN_POSITION
-
         if in_band:
-            self.rewards[i] += self._C_IN_BAND
             self.in_band_steps[i] += 1
             self.theta_accum[i] += delta
 
@@ -748,6 +750,10 @@ class OrbitRaiseTrainer(Application):
                     and abs(self.theta_accum[i]) >= math.pi):
                 self.awarded_half[i] = True
                 self.rewards[i] += self._MILESTONE_HALF
+            if (not self.awarded_three_quarter[i]
+                    and abs(self.theta_accum[i]) >= 1.5 * math.pi):
+                self.awarded_three_quarter[i] = True
+                self.rewards[i] += self._MILESTONE_THREE_QUARTER
         else:
             self.theta_accum[i] = 0.0
 
@@ -892,6 +898,7 @@ class OrbitRaiseTrainer(Application):
         success = self._gen_terminal_counts.get("success", 0)
         success_rate = (success / total) if total > 0 else 0.0
         undock_rate = (self._gen_undock_ok / total) if total > 0 else 0.0
+        band_rate = (self._gen_band_entries / total) if total > 0 else 0.0
 
         mean_fuel = (
             sum(self._gen_success_fuel) / len(self._gen_success_fuel)
@@ -927,6 +934,7 @@ class OrbitRaiseTrainer(Application):
             },
             "success_rate": round(float(success_rate), 4),
             "undock_ok_rate": round(float(undock_rate), 4),
+            "band_entry_rate": round(float(band_rate), 4),
             "mean_fuel_frac_at_success": (
                 round(float(mean_fuel), 4) if mean_fuel is not None else None
             ),
