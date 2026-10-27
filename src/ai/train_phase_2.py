@@ -1,17 +1,19 @@
-"""Fase 2 — Órbita Maior: aprender a subir e manter órbita.
+"""Fase 2 — Órbita Maior: aprender a subir suavemente e manter órbita.
 
 Herda a habilidade de desacoplar da Fase 1 via warm-start. Cada
 episódio começa acoplado e tem α sorteado no range do currículo.
 
-Estrutura de recompensa:
-- Milestones grandes e positivos empurram o GA para frente. Sem eles,
-  o "sit still" (timeout) e o "spin out" (escape) são atratores
-  locais que dominam a população em poucas gerações.
-- Escape é punido (-180), mas **não catastrófico**. Punir com -500
-  fazia a rede preferir *não tentar* (-200 docked timeout era
-  melhor que -450 escape).
-- `docked_timeout = -200` força a rede a desacoplar. Sem isso,
-  "ficar parado" vencia "tentar e falhar".
+Estrutura de recompensa (após correções):
+- Milestones pagam progresso: undock → approach → smooth-entry →
+  position → velocity → quarter → half → success.
+- `smooth_entry` (+400) só dispara se o foguete entrar na r-band com
+  `|v_r|/v_ref < 0.15` e **nunca tiver feito overshoot** (r > 1.25·r_ref).
+  Isso força a política a aprender a subida suave, não "explode e
+  desacelera".
+- Overshoot é punido diretamente: -0.20/passo acima de 1.15·r_ref e
+  -0.40/passo acima de 1.25·r_ref.
+- Denso em banda é pequeno (0.02) para que timeout (−250) nunca
+  compense o sucesso terminal (+300 + bônus).
 """
 
 import json
@@ -38,7 +40,7 @@ from src.ai.neural_population import NeuralPopulation
 
 
 class OrbitRaiseTrainer(Application):
-    """@brief Fase 2 do currículo: subir a órbita e mantê-la."""
+    """@brief Fase 2 do currículo: subir a órbita suavemente e mantê-la."""
 
     _INITIAL_ZOOM = 0.05
 
@@ -53,9 +55,6 @@ class OrbitRaiseTrainer(Application):
     _HOST_MASS_RANGE = (400_000.0, 700_000.0)
     _HOST_RADIUS_RANGE = (500.0, 540.0)
 
-    # α range mais estreito acelera o currículo. 1.5 preserva o alvo
-    # da Fase 1 (política herdada continua útil). Topo em 2.2 (era
-    # 2.5) porque α alto multiplica a dificuldade do controle.
     _ALPHA_MIN = 1.5
     _ALPHA_MAX_START = 1.7
     _ALPHA_MAX_END = 2.2
@@ -68,47 +67,60 @@ class OrbitRaiseTrainer(Application):
     _ESCAPE_R_FACTOR = 3.0
     _UNDOCK_R_FACTOR = 1.5
 
-    # Milestones cumulativos (cada um dispara uma vez por episódio).
-    # A soma `_MILESTONE_UNDOCK` + ... + `_TERMINAL_SUCCESS` é ~890.
-    # Isso dá escada de 1090 pontos entre "docked" (-200) e "orbit"
-    # (+890), com cada degrau intermediário claramente distinguível.
-    _MILESTONE_UNDOCK = 150.0
+    # --- Milestones.
+    # O undock vale menos que a soma total; se valesse muito, "só
+    # desacoplar e morrer" seria competitivo contra "tentar chegar".
+    _MILESTONE_UNDOCK = 100.0
     _MILESTONE_APPROACH = 40.0
     _MILESTONE_POSITION = 100.0
     _MILESTONE_VELOCITY = 120.0
     _MILESTONE_QUARTER = 60.0
     _MILESTONE_HALF = 120.0
 
-    # Zona "approaching": entre o undock e a banda de posição, dá
-    # um alvo intermediário barato. `|v_r|` baixo incentiva frear
-    # cedo em vez de thrustar até passar de r_ref.
+    # --- Smooth entry: o sinal que ensina "subir suavemente".
+    # Só dispara se o foguete chegar na r-band com |v_r| baixo e sem
+    # ter feito overshoot. Uma única vez por episódio.
+    _MILESTONE_SMOOTH_ENTRY = 400.0
+    _SMOOTH_VR_FRAC = 0.15
+
+    # Zona "approaching": alvo intermediário entre o undock e a banda.
     _APPROACH_R_MIN = 1.2
     _APPROACH_R_MAX_FRAC = 0.95
 
-    # Shaping. Φ_VR alto (60) é o que ensina "subir suavemente" —
-    # |v_r| alto perto de r_ref é caro, forçando coast-and-brake
-    # em vez de thrust-and-pray.
+    # --- Overshoot. Rastreamos "passou do alvo" e punimos
+    # proporcionalmente à distância em relação a r_ref. Sem isso, o
+    # GA encontra "thrustar até 2× r_ref, coastar de volta" como uma
+    # estratégia barata — é o comportamento que queremos eliminar.
+    _OVERSHOOT_PENALTY_FACTOR = 1.15
+    _OVERSHOOT_FACTOR = 1.25
+    _C_OVERSHOOT = 0.20
+
+    # --- Shaping. `Φ_VR` alto (100) torna |v_r|/v_ref caro perto de
+    # r_ref — força frear cedo em vez de thrustar-e-passar.
     _PHI_R_SCALE = 60.0
-    _PHI_VR_SCALE = 60.0
-    _PHI_VT_SCALE = 50.0
+    _PHI_VR_SCALE = 100.0
+    _PHI_VT_SCALE = 80.0
     _PHI_CAP = 1.0
 
-    _C_IN_BAND = 0.08
-    _C_IN_POSITION = 0.03
+    # --- Denso. Pequeno para não ser "farmável"; o terminal precisa
+    # dominar. Antes em 0.08, permitia timeout lucrativo.
+    _C_IN_BAND = 0.02
+    _C_IN_POSITION = 0.005
 
     _C_THRUST = 0.005
     _C_ROTATE = 0.001
     _C_TIME = 0.0002
 
-    # Terminais. `docked_timeout` é o pior — o GA precisa aprender
-    # que "não tentar" é pior que "tentar e escapar".
+    # --- Terminais. `docked_timeout` é o pior (−400) para empurrar
+    # a política a tentar; timeout (−250) é pior que sucesso (+300)
+    # mesmo descontando o acúmulo denso.
     _TERMINAL_SUCCESS = +300.0
-    _TERMINAL_CRASH = -100.0
+    _TERMINAL_CRASH = -120.0
     _TERMINAL_REDOCKED = -30.0
-    _TERMINAL_ESCAPE = -180.0
+    _TERMINAL_ESCAPE = -200.0
     _TERMINAL_FUEL = -80.0
-    _TERMINAL_TIMEOUT = -80.0
-    _TERMINAL_DOCKED_TIMEOUT = -200.0
+    _TERMINAL_TIMEOUT = -250.0
+    _TERMINAL_DOCKED_TIMEOUT = -400.0
 
     _FUEL_BONUS_SCALE = 60.0
     _TIME_BONUS_SCALE = 30.0
@@ -141,8 +153,7 @@ class OrbitRaiseTrainer(Application):
         @param max_generations Total de gerações.
         @param episodes_per_gen Episódios por rede por geração.
         @param method "sexual" ou "asexual".
-        @param elite_count Indivíduos preservados intactos — 15
-            preserva o skill da Fase 1 contra drift genético.
+        @param elite_count Indivíduos preservados intactos.
         @param mutation_rate_start Taxa de mutação na geração 0.
         @param mutation_rate_end Taxa de mutação na última geração.
         @param mutation_std Desvio-padrão do ruído gaussiano.
@@ -166,6 +177,7 @@ class OrbitRaiseTrainer(Application):
         self.alive: list[bool] = []
         self.steps: list[int] = []
         self.ever_undocked: list[bool] = []
+        self.ever_overshot: list[bool] = []
         self.undock_ok: list[bool] = []
         self.terminal_reasons: list[Optional[str]] = []
         self.prev_phi: list[float] = []
@@ -174,6 +186,7 @@ class OrbitRaiseTrainer(Application):
 
         self.awarded_undock: list[bool] = []
         self.awarded_approach: list[bool] = []
+        self.awarded_smooth: list[bool] = []
         self.awarded_position: list[bool] = []
         self.awarded_velocity: list[bool] = []
         self.awarded_quarter: list[bool] = []
@@ -290,6 +303,7 @@ class OrbitRaiseTrainer(Application):
         self.alive = [True] * n
         self.steps = [0] * n
         self.ever_undocked = [False] * n
+        self.ever_overshot = [False] * n
         self.undock_ok = [False] * n
         self.terminal_reasons = [None] * n
         self.prev_phi = [0.0] * n
@@ -298,6 +312,7 @@ class OrbitRaiseTrainer(Application):
 
         self.awarded_undock = [False] * n
         self.awarded_approach = [False] * n
+        self.awarded_smooth = [False] * n
         self.awarded_position = [False] * n
         self.awarded_velocity = [False] * n
         self.awarded_quarter = [False] * n
@@ -577,7 +592,7 @@ class OrbitRaiseTrainer(Application):
             actions, _, _ = network.select_action(
                 obs_tensor, deterministic=True
             )
-        action = int(actions.items()) if False else int(actions.item())
+        action = int(actions.item())
         rotation_input, thrusting = Rocket.AI_ACTIONS[action]
         rocket.set_control(rotation_input, thrusting)
 
@@ -611,11 +626,11 @@ class OrbitRaiseTrainer(Application):
     def _update_reward_for(self, i: int) -> None:
         """@brief Recompensa, milestones e terminais do foguete `i`.
 
-        @details Ordem: shaping → custos → milestones → terminais.
-        Cada milestone dispara **uma vez por episódio**. A escada
-        (undock + approach + position + velocity + quarter + half +
-        success) dá ao GA gradiente para progredir em vez de
-        estacionar em "não thrustar" ou "escapar".
+        @details Ordem: shaping → custos → overshoot → milestones →
+        terminais. A escada de milestones paga progresso incremental
+        e `_MILESTONE_SMOOTH_ENTRY` só dispara se a primeira entrada
+        na r-band ocorreu com `|v_r|/v_ref < _SMOOTH_VR_FRAC` e sem
+        overshoot — o sinal que ensina "subida suave".
         """
         rocket = self.rockets[i]
         host = self.host
@@ -653,13 +668,23 @@ class OrbitRaiseTrainer(Application):
         if rocket.docked_to is None:
             self.ever_undocked[i] = True
 
+        # Overshoot: rastreia "passou do alvo" e pune proporcionalmente.
+        # A punição dobra acima de `_OVERSHOOT_FACTOR` — desencoraja
+        # fortemente o comportamento "thrust até 2× r_ref, coastar".
+        if r_ref > 0.0:
+            if r > r_ref * self._OVERSHOOT_FACTOR:
+                self.ever_overshot[i] = True
+                self.rewards[i] -= 2.0 * self._C_OVERSHOOT
+            elif r > r_ref * self._OVERSHOOT_PENALTY_FACTOR:
+                self.rewards[i] -= self._C_OVERSHOOT
+
         # --- Milestone T1: undock.
         if not self.awarded_undock[i] and r >= self._UNDOCK_R_FACTOR * host.radius:
             self.awarded_undock[i] = True
             self.undock_ok[i] = True
             self.rewards[i] += self._MILESTONE_UNDOCK
 
-        # --- Milestone T2: approach (transição para r_ref).
+        # --- Milestone T2: approach (passou da zona "rasa").
         if (self.ever_undocked[i]
                 and not self.awarded_approach[i]
                 and r >= self._APPROACH_R_MIN * host.radius
@@ -676,6 +701,18 @@ class OrbitRaiseTrainer(Application):
             and abs(v_t_abs / v_ref - 1.0) < self._STABLE_V_BAND
         )
         in_band = in_position and in_velocity
+
+        vr_frac = abs(v_r) / v_ref if v_ref > 0.0 else 1.0
+
+        # --- Milestone T2.5: smooth entry. Só dispara na PRIMEIRA
+        # entrada em r-band com v_r baixo e sem overshoot prévio.
+        # É o sinal mais forte contra "explode e desacelera".
+        if (in_position
+                and not self.awarded_smooth[i]
+                and not self.ever_overshot[i]
+                and vr_frac < self._SMOOTH_VR_FRAC):
+            self.awarded_smooth[i] = True
+            self.rewards[i] += self._MILESTONE_SMOOTH_ENTRY
 
         # --- Milestone T3: position.
         if in_position and not self.awarded_position[i]:
@@ -803,8 +840,6 @@ class OrbitRaiseTrainer(Application):
             or host is None
             or not host.active
         ):
-            # Aplicar timeout (ou docked_timeout) aos sobreviventes.
-            # A distinção é crucial: "nunca tentei" é o pior desfecho.
             for i in range(len(self.alive)):
                 if self.alive[i]:
                     if not self.ever_undocked[i]:
