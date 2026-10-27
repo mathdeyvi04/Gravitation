@@ -47,40 +47,50 @@ class OrbitRaiseTrainer(UndockingTrainer):
 
     _TARGET_ALPHA_RANGE = (2.0, 3.0)
     _INITIAL_RADIUS_FACTOR_RANGE = (1.50, 1.60)
-    _INITIAL_RADIAL_SPEED_FACTOR = 0.08
-    _INITIAL_TANGENTIAL_SPEED_FACTOR = 0.93
+    # Começa numa órbita circular inferior à meta. A orientação inicial já
+    # aponta para a tangente prógrada, evitando gastar combustível em rotação
+    # só para alinhar o motor antes da primeira manobra.
+    _INITIAL_RADIAL_SPEED_FACTOR = 0.0
+    _INITIAL_TANGENTIAL_SPEED_FACTOR = 1.0
 
     _ACCEPTANCE_BAND = 0.12
     _ESCAPE_R_FACTOR = 8.0
     _TIMEOUT_TARGET_ORBITS = 1.80
 
-    # Recompensas de potencial e regularização de trajetória.
-    _PHI_RADIUS_SCALE = 42.0
-    _PHI_TANGENTIAL_SCALE = 28.0
-    _PHI_RADIAL_SCALE = 12.0
-    _PHI_STABLE_ORBIT_SCALE = 18.0
-    _PHI_OVERSHOOT_SCALE = 25.0
+    # Potencial: progresso até a altitude, proximidade do raio-alvo,
+    # velocidade circular e velocidade radial próxima de zero. A penalidade
+    # de ultrapassagem é forte para não premiar trajetórias que escapam.
+    _PHI_RADIUS_SCALE = 38.0
+    _PHI_TARGET_RADIUS_SCALE = 24.0
+    _PHI_TANGENTIAL_SCALE = 22.0
+    _PHI_RADIAL_SCALE = 22.0
+    _PHI_STABLE_ORBIT_SCALE = 22.0
+    _PHI_OVERSHOOT_SCALE = 110.0
+    _TARGET_RADIUS_SIGMA = 0.08
     _TANGENTIAL_SPEED_TOLERANCE = 0.20
     _RADIAL_SPEED_TOLERANCE = 0.12
 
-    # Custos por passo: empuxo/rotação/tempo, mais custo proporcional ao
-    # combustível realmente consumido. O custo de vr desencoraja uma subida
-    # excessivamente agressiva sem bloquear a aquisição de altitude.
-    _C_THRUST = 0.025
-    _C_ROTATE = 0.002
-    _C_TIME = 0.0015
-    _C_FUEL_USAGE = 50.0
-    _C_RADIAL_SPEED = 0.003
+    # Custos de controle calibrados para que girar/queimar continuamente seja
+    # muito pior que executar manobras curtas e depois planar sem controle.
+    # O combustível consumido também é penalizado explicitamente.
+    _C_THRUST = 0.20
+    _C_ROTATE = 0.08
+    _C_THRUST_IN_BAND = 0.12
+    _C_ROTATE_IN_BAND = 0.08
+    _C_TIME = 0.0005
+    _C_FUEL_USAGE = 250.0
+    _C_RADIAL_SPEED = 0.004
+    _R_STABLE_COAST_PER_STEP = 0.012
 
-    _TERMINAL_SUCCESS = 120.0
-    _TERMINAL_CRASH = -90.0
-    _TERMINAL_ESCAPE = -75.0
-    _TERMINAL_FUEL = -60.0
+    _TERMINAL_SUCCESS = 180.0
+    _TERMINAL_CRASH = -100.0
+    _TERMINAL_ESCAPE = -100.0
+    _TERMINAL_FUEL = -75.0
     _TERMINAL_TIMEOUT = -65.0
 
-    _FUEL_BONUS_SCALE = 30.0
-    _ORBIT_QUALITY_BONUS_SCALE = 25.0
-    _TIME_BONUS_SCALE = 5.0
+    _FUEL_BONUS_SCALE = 45.0
+    _ORBIT_QUALITY_BONUS_SCALE = 35.0
+    _TIME_BONUS_SCALE = 3.0
 
     def __init__(
         self,
@@ -114,7 +124,9 @@ class OrbitRaiseTrainer(UndockingTrainer):
             base_seed=base_seed,
             output_dir=output_dir,
         )
-        self.log_path = self.output_dir / "training_log_phase2.jsonl"
+        # Arquivo separado para não misturar gerações antigas, treinadas com
+        # a função de recompensa anterior, com os resultados desta versão.
+        self.log_path = self.output_dir / "training_log_phase2_minfuel.jsonl"
 
         self._current_alpha = self._TARGET_ALPHA_RANGE[0]
         self._target_radii: list[float] = []
@@ -128,7 +140,12 @@ class OrbitRaiseTrainer(UndockingTrainer):
         self._stable_progress: list[float] = []
         self._max_stable_progress: list[float] = []
         self._stable_error_sum: list[float] = []
+        self._stable_radial_error_sum: list[float] = []
+        self._stable_tangential_error_sum: list[float] = []
         self._stable_band_steps: list[int] = []
+        self._stable_valid_steps_total: list[int] = []
+        self._stable_coast_steps: list[int] = []
+        self._in_band_control_steps: list[int] = []
         self._terminal_snapshots: list[Optional[dict]] = []
         self._gen_episode_records: list[dict] = []
         self._gen_alpha_values: list[float] = []
@@ -140,7 +157,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
         super().start_training(population)
 
     def _start_episode(self) -> None:
-        """Cria um host e inicia todos os foguetes em voo ascendente."""
+        """Cria um host e põe os foguetes numa órbita circular inferior à meta."""
         random.seed(
             self.base_seed
             + self.generation * self.episodes_per_gen
@@ -192,7 +209,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
         radius: float,
         alpha: float,
     ) -> Rocket:
-        """Cria um foguete já desacoplado, com velocidade radial positiva."""
+        """Cria um foguete em órbita circular baixa, apontado para a tangente prógrada."""
         radial = pygame.Vector2(math.cos(angle), math.sin(angle))
         tangential = pygame.Vector2(-math.sin(angle), math.cos(angle))
         mu = self.sim_config.gravitational_constant * (
@@ -214,7 +231,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
             position=pygame.Vector2(position),
             velocity=pygame.Vector2(velocity),
             alpha=alpha,
-            angle=angle,
+            angle=angle + math.pi / 2.0,
             body_length=self.ROCKET_BODY_LENGTH,
             body_width=self.ROCKET_BODY_WIDTH,
             nose_length=self.ROCKET_NOSE_LENGTH,
@@ -251,7 +268,12 @@ class OrbitRaiseTrainer(UndockingTrainer):
         self._stable_progress = [0.0] * count
         self._max_stable_progress = [0.0] * count
         self._stable_error_sum = [0.0] * count
+        self._stable_radial_error_sum = [0.0] * count
+        self._stable_tangential_error_sum = [0.0] * count
         self._stable_band_steps = [0] * count
+        self._stable_valid_steps_total = [0] * count
+        self._stable_coast_steps = [0] * count
+        self._in_band_control_steps = [0] * count
         self._terminal_snapshots = [None] * count
 
         host = self.host
@@ -320,6 +342,10 @@ class OrbitRaiseTrainer(UndockingTrainer):
         progress = _clamp((radius - start_radius) / span, 0.0, 1.0)
         smooth_progress = progress * progress * (3.0 - 2.0 * progress)
 
+        radius_error = radius / target_radius - 1.0
+        radius_quality = math.exp(
+            -0.5 * min((radius_error / self._TARGET_RADIUS_SIGMA) ** 2, 60.0)
+        )
         tangential_error = (
             (tangential_velocity - target_speed)
             / max(self._TANGENTIAL_SPEED_TOLERANCE * target_speed, 1e-9)
@@ -335,10 +361,11 @@ class OrbitRaiseTrainer(UndockingTrainer):
             self._stable_progress[i] / (2.0 * math.pi), 0.0, 1.0
         )
         overshoot = max(0.0, radius / target_radius - 1.0)
-        overshoot_penalty = self._PHI_OVERSHOOT_SCALE * min(overshoot, 3.0) ** 2
+        overshoot_penalty = self._PHI_OVERSHOOT_SCALE * overshoot**2
 
         return (
             self._PHI_RADIUS_SCALE * smooth_progress
+            + self._PHI_TARGET_RADIUS_SCALE * radius_quality
             + self._PHI_TANGENTIAL_SCALE * smooth_progress * tangential_quality
             + self._PHI_RADIAL_SCALE * smooth_progress * radial_quality
             + self._PHI_STABLE_ORBIT_SCALE * orbit_fraction
@@ -387,6 +414,27 @@ class OrbitRaiseTrainer(UndockingTrainer):
                 self._max_stable_progress[i] / (2.0 * math.pi), 0.0, 1.0
             ),
             "band_step_fraction": self._inside_band_steps[i] / max(1, self.steps[i]),
+            "in_band_control_fraction": (
+                self._in_band_control_steps[i] / max(1, self._inside_band_steps[i])
+            ),
+            "stable_coast_fraction": (
+                self._stable_coast_steps[i] / max(1, self._stable_valid_steps_total[i])
+            ),
+            "stable_valid_step_fraction": (
+                self._stable_valid_steps_total[i] / max(1, self.steps[i])
+            ),
+            "mean_stable_radius_error": (
+                self._stable_error_sum[i] / self._stable_band_steps[i]
+                if self._stable_band_steps[i] else None
+            ),
+            "mean_stable_radial_speed_error": (
+                self._stable_radial_error_sum[i] / self._stable_band_steps[i]
+                if self._stable_band_steps[i] else None
+            ),
+            "mean_stable_tangential_speed_error": (
+                self._stable_tangential_error_sum[i] / self._stable_band_steps[i]
+                if self._stable_band_steps[i] else None
+            ),
             "thrust_steps": self._thrust_steps[i],
             "rotation_steps": self._rotation_steps[i],
             "steps": self.steps[i],
@@ -418,21 +466,43 @@ class OrbitRaiseTrainer(UndockingTrainer):
         self.steps[i] += 1
 
         target_radius = self._target_radii[i]
+        target_speed = max(self._v_ref[i], 1e-9)
         in_band = abs(radius - target_radius) <= (
             self._ACCEPTANCE_BAND * target_radius
         )
+        radial_speed_error = abs(radial_velocity) / target_speed
+        tangential_speed_error = abs(tangential_velocity - target_speed) / target_speed
+        stable_orbit_step = (
+            in_band
+            and tangential_velocity > 0.0
+            and radial_speed_error <= self._RADIAL_SPEED_TOLERANCE
+            and tangential_speed_error <= self._TANGENTIAL_SPEED_TOLERANCE
+        )
+
         if in_band:
             self._inside_band_steps[i] += 1
-            # O sentido inicial é prógrado. Uma inversão angular reduz o
-            # progresso acumulado; deixar a banda reinicia o período estável.
+            if rocket.thrusting or rocket.rotation_input != 0:
+                self._in_band_control_steps[i] += 1
+
+        if stable_orbit_step:
+            # Um passo só conta para a volta de sucesso se posição e velocidade
+            # já corresponderem a uma órbita aproximadamente circular.
             self._stable_progress[i] = max(
                 0.0, self._stable_progress[i] + delta_angle
             )
             self._stable_error_sum[i] += abs(radius / target_radius - 1.0)
+            self._stable_radial_error_sum[i] += radial_speed_error
+            self._stable_tangential_error_sum[i] += tangential_speed_error
             self._stable_band_steps[i] += 1
+            self._stable_valid_steps_total[i] += 1
+            if not rocket.thrusting and rocket.rotation_input == 0:
+                self._stable_coast_steps[i] += 1
         else:
+            # Qualquer desvio de raio ou velocidade reinicia a volta estável.
             self._stable_progress[i] = 0.0
             self._stable_error_sum[i] = 0.0
+            self._stable_radial_error_sum[i] = 0.0
+            self._stable_tangential_error_sum[i] = 0.0
             self._stable_band_steps[i] = 0
 
         self._max_stable_progress[i] = max(
@@ -449,9 +519,17 @@ class OrbitRaiseTrainer(UndockingTrainer):
         if rocket.thrusting:
             self._thrust_steps[i] += 1
             self.rewards[i] -= self._C_THRUST
+            if in_band:
+                self.rewards[i] -= self._C_THRUST_IN_BAND
         if rocket.rotation_input:
             self._rotation_steps[i] += 1
             self.rewards[i] -= self._C_ROTATE * abs(rocket.rotation_input)
+            if in_band:
+                self.rewards[i] -= self._C_ROTATE_IN_BAND * abs(rocket.rotation_input)
+        if stable_orbit_step and not rocket.thrusting and rocket.rotation_input == 0:
+            # Recompensa por manter a órbita em voo livre: o comportamento
+            # ideal é entrar na banda, cortar o motor e parar de girar.
+            self.rewards[i] += self._R_STABLE_COAST_PER_STEP
         self.rewards[i] -= self._C_TIME
 
         fuel_consumed = max(0.0, self._prev_fuel[i] - float(rocket.fuel))
@@ -481,12 +559,25 @@ class OrbitRaiseTrainer(UndockingTrainer):
             return
 
         if self._stable_progress[i] >= 2.0 * math.pi:
-            mean_radius_error = (
-                self._stable_error_sum[i] / self._stable_band_steps[i]
-                if self._stable_band_steps[i] else self._ACCEPTANCE_BAND
+            steps = max(1, self._stable_band_steps[i])
+            mean_radius_error = self._stable_error_sum[i] / steps
+            mean_radial_error = self._stable_radial_error_sum[i] / steps
+            mean_tangential_error = self._stable_tangential_error_sum[i] / steps
+            radius_quality = _clamp(
+                1.0 - mean_radius_error / self._ACCEPTANCE_BAND, 0.0, 1.0
+            )
+            radial_quality = _clamp(
+                1.0 - mean_radial_error / self._RADIAL_SPEED_TOLERANCE, 0.0, 1.0
+            )
+            tangential_quality = _clamp(
+                1.0 - mean_tangential_error / self._TANGENTIAL_SPEED_TOLERANCE,
+                0.0, 1.0,
             )
             orbit_quality = _clamp(
-                1.0 - mean_radius_error / self._ACCEPTANCE_BAND, 0.0, 1.0
+                0.40 * radius_quality
+                + 0.30 * radial_quality
+                + 0.30 * tangential_quality,
+                0.0, 1.0,
             )
             fuel_fraction = (
                 _clamp(rocket.fuel / rocket.fuel_max, 0.0, 1.0)
@@ -531,6 +622,27 @@ class OrbitRaiseTrainer(UndockingTrainer):
                         self._max_stable_progress[i] / (2.0 * math.pi), 0.0, 1.0
                     ),
                     "band_step_fraction": self._inside_band_steps[i] / max(1, self.steps[i]),
+                    "in_band_control_fraction": (
+                        self._in_band_control_steps[i] / max(1, self._inside_band_steps[i])
+                    ),
+                    "stable_coast_fraction": (
+                        self._stable_coast_steps[i] / max(1, self._stable_valid_steps_total[i])
+                    ),
+                    "stable_valid_step_fraction": (
+                        self._stable_valid_steps_total[i] / max(1, self.steps[i])
+                    ),
+                    "mean_stable_radius_error": (
+                        self._stable_error_sum[i] / self._stable_band_steps[i]
+                        if self._stable_band_steps[i] else None
+                    ),
+                    "mean_stable_radial_speed_error": (
+                        self._stable_radial_error_sum[i] / self._stable_band_steps[i]
+                        if self._stable_band_steps[i] else None
+                    ),
+                    "mean_stable_tangential_speed_error": (
+                        self._stable_tangential_error_sum[i] / self._stable_band_steps[i]
+                        if self._stable_band_steps[i] else None
+                    ),
                     "thrust_steps": self._thrust_steps[i],
                     "rotation_steps": self._rotation_steps[i],
                     "steps": self.steps[i],
@@ -601,6 +713,8 @@ class OrbitRaiseTrainer(UndockingTrainer):
             f"órbita={mean_peak_orbit if mean_peak_orbit is not None else 0.0:.1%}  "
             f"comb={mean_fuel_used if mean_fuel_used is not None else 0.0:.1%} "
             f"(sucesso={mean_success_fuel if mean_success_fuel is not None else 0.0:.1%})  "
+            f"coast={_mean([float(row['stable_coast_fraction']) for row in records]) or 0.0:.1%} "
+            f"ctrl_banda={_mean([float(row['in_band_control_fraction']) for row in records]) or 0.0:.1%}  "
             f"mut={self._current_mutation_rate():.3f} dt={elapsed:.1f}s  "
             f"term={dict(self._gen_terminal_counts)}"
         )
@@ -681,6 +795,27 @@ class OrbitRaiseTrainer(UndockingTrainer):
                 "mean_band_step_fraction": round(
                     _mean([float(row["band_step_fraction"]) for row in own]) or 0.0, 4
                 ),
+                "mean_in_band_control_fraction": round(
+                    _mean([float(row["in_band_control_fraction"]) for row in own]) or 0.0, 4
+                ),
+                "mean_stable_coast_fraction": round(
+                    _mean([float(row["stable_coast_fraction"]) for row in own]) or 0.0, 4
+                ),
+                "mean_stable_valid_step_fraction": round(
+                    _mean([float(row["stable_valid_step_fraction"]) for row in own]) or 0.0, 4
+                ),
+                "mean_stable_radial_speed_error": round(
+                    _mean([
+                        float(row["mean_stable_radial_speed_error"])
+                        for row in own if row["mean_stable_radial_speed_error"] is not None
+                    ]) or 0.0, 4
+                ),
+                "mean_stable_tangential_speed_error": round(
+                    _mean([
+                        float(row["mean_stable_tangential_speed_error"])
+                        for row in own if row["mean_stable_tangential_speed_error"] is not None
+                    ]) or 0.0, 4
+                ),
                 "mean_thrust_steps": round(
                     _mean([float(row["thrust_steps"]) for row in own]) or 0.0, 2
                 ),
@@ -695,6 +830,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
         entry = {
             "event": "generation",
             "phase": "orbit_raise",
+            "reward_profile": "minimum_fuel_coasting_v2",
             "gen": int(self.generation),
             "episodes_per_net": int(self.episodes_per_gen),
             "wall_time_s": round(float(gen_dt), 3),
@@ -707,6 +843,18 @@ class OrbitRaiseTrainer(UndockingTrainer):
             "acceptance_band_fraction": self._ACCEPTANCE_BAND,
             "required_stable_angular_progress_rad": round(2.0 * math.pi, 6),
             "timeout_target_orbits": self._TIMEOUT_TARGET_ORBITS,
+            "stable_orbit_velocity_tolerance": {
+                "radial_over_target_speed": self._RADIAL_SPEED_TOLERANCE,
+                "tangential_over_target_speed": self._TANGENTIAL_SPEED_TOLERANCE,
+            },
+            "control_costs": {
+                "thrust_per_step": self._C_THRUST,
+                "rotation_per_step": self._C_ROTATE,
+                "extra_thrust_in_target_band": self._C_THRUST_IN_BAND,
+                "extra_rotation_in_target_band": self._C_ROTATE_IN_BAND,
+                "fuel_usage_scale": self._C_FUEL_USAGE,
+                "stable_coasting_reward_per_step": self._R_STABLE_COAST_PER_STEP,
+            },
             "fitness": {
                 "best": round(float(ordered[-1]), 4),
                 "avg": round(float(average), 4),
@@ -734,6 +882,27 @@ class OrbitRaiseTrainer(UndockingTrainer):
                 "mean_band_step_fraction": round(
                     optional_mean(records, "band_step_fraction") or 0.0, 4
                 ),
+                "mean_in_band_control_fraction": round(
+                    optional_mean(records, "in_band_control_fraction") or 0.0, 4
+                ),
+                "mean_stable_coast_fraction": round(
+                    optional_mean(records, "stable_coast_fraction") or 0.0, 4
+                ),
+                "mean_stable_valid_step_fraction": round(
+                    optional_mean(records, "stable_valid_step_fraction") or 0.0, 4
+                ),
+                "mean_stable_radial_speed_error": round(
+                    optional_mean([
+                        row for row in records
+                        if row["mean_stable_radial_speed_error"] is not None
+                    ], "mean_stable_radial_speed_error") or 0.0, 4
+                ),
+                "mean_stable_tangential_speed_error": round(
+                    optional_mean([
+                        row for row in records
+                        if row["mean_stable_tangential_speed_error"] is not None
+                    ], "mean_stable_tangential_speed_error") or 0.0, 4
+                ),
                 "mean_thrust_steps": round(
                     optional_mean(records, "thrust_steps") or 0.0, 2
                 ),
@@ -757,6 +926,25 @@ class OrbitRaiseTrainer(UndockingTrainer):
         }
         with self.log_path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def update(self, delta_time: float) -> None:
+        """Controles de câmera e velocidade da simulação (até 8x)."""
+        if self.input.mouse_wheel != 0:
+            self.camera.zoom_at(
+                self.input.mouse_position,
+                1.1 ** self.input.mouse_wheel,
+            )
+        if self.input.was_pressed(pygame.K_RIGHT):
+            self.speed_multiplier = min(8.0, self.speed_multiplier + 0.5)
+        if self.input.was_pressed(pygame.K_LEFT):
+            self.speed_multiplier = max(1.0, self.speed_multiplier - 0.5)
+        # Atalhos para não precisar pressionar a seta 14 vezes.
+        if self.input.was_pressed(pygame.K_8):
+            self.speed_multiplier = 8.0
+        if self.input.was_pressed(pygame.K_1):
+            self.speed_multiplier = 1.0
+        if self.input.is_mouse_button_down(pygame.BUTTON_LEFT):
+            self.camera.move(-self.input.mouse_delta / self.camera.zoom)
 
     def render(self, renderer) -> None:
         """Mostra a órbita-alvo, a banda de tolerância e o estado do treino."""
@@ -803,7 +991,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
             (10, 73), size=19, color=(255, 220, 120),
         )
         renderer.draw_text(
-            f"Velocidade = {self.speed_multiplier:.2f}x   "
+            f"Velocidade = {self.speed_multiplier:.2f}x (←/→; 8=8x; 1=1x)   "
             f"timeout = {self._TIMEOUT_TARGET_ORBITS:.2f} períodos-alvo",
             (10, 102), size=18, color=(140, 220, 140),
         )
