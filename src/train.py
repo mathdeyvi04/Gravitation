@@ -43,7 +43,7 @@ PHASE_REGISTRY = {
     2: {
         "name": "Órbita Maior",
         "cls": OrbitRaiseTrainer,
-        "generations": 40,
+        "generations": 80,
         "episodes_per_gen": 2,
         "mutation_rate_start": 0.04,
         "warm_start_from": "phase1_best.pt",

@@ -124,7 +124,7 @@ class OrbitRaiseTrainer(Application):
         self,
         config: Configs,
         sim_config: SimulationConfig,
-        max_generations: int = 60,
+        max_generations: int = 80,
         episodes_per_gen: int = 2,
         method: str = "sexual",
         elite_count: int = 15,
