@@ -23,6 +23,8 @@ import torch
 
 from src.ai.neural_population import NeuralPopulation
 from src.ai.train_phase_1 import UndockingTrainer
+from src.engine.world import World
+from src.physics.composite_acceleration import CompositeAccelerationModel
 from src.entities.rocket import Rocket
 from src.physics.collision import collides
 from src.physics.isolated_host_gravity import IsolatedHostGravity
@@ -92,6 +94,16 @@ class OrbitRaiseTrainer(UndockingTrainer):
     _ORBIT_QUALITY_BONUS_SCALE = 35.0
     _TIME_BONUS_SCALE = 3.0
 
+    # Seleção multiobjetivo: um teste de regressão da Fase 1 é executado
+    # em cada geração. O bônus de sucesso é deliberadamente maior que o
+    # bônus de qualidade: uma rede não deve compensar a perda da desacoplagem
+    # apenas por melhorar ligeiramente a pontuação orbital.
+    _PHASE1_REGRESSION_EPISODES = 2
+    _PHASE1_SUCCESS_BONUS = 45.0
+    _PHASE1_QUALITY_BONUS = 15.0
+    _PHASE1_ANCHOR_COPIES_MAX = 5
+    _PHASE1_ANCHOR_FILE = "phase1_anchor_preserved.pt"
+
     def __init__(
         self,
         config,
@@ -126,7 +138,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
         )
         # Arquivo separado para não misturar gerações antigas, treinadas com
         # a função de recompensa anterior, com os resultados desta versão.
-        self.log_path = self.output_dir / "training_log_phase2_minfuel.jsonl"
+        self.log_path = self.output_dir / "training_log_phase2_dual_minfuel_v3.jsonl"
 
         self._current_alpha = self._TARGET_ALPHA_RANGE[0]
         self._target_radii: list[float] = []
@@ -149,13 +161,243 @@ class OrbitRaiseTrainer(UndockingTrainer):
         self._terminal_snapshots: list[Optional[dict]] = []
         self._gen_episode_records: list[dict] = []
         self._gen_alpha_values: list[float] = []
+        self._gen_phase1_records: list[dict] = []
+        self._phase1_anchor_state: Optional[dict] = None
+        self._best_dual_state: Optional[dict] = None
+        self._best_dual_score: float = -math.inf
+        self._best_dual_generation: int = -1
+        self._best_dual_phase1_score: Optional[float] = None
+        self._best_orbit_only_state: Optional[dict] = None
+        self._best_orbit_only_score: float = -math.inf
 
     def start_training(self, population: NeuralPopulation) -> None:
-        """Inicia a Fase 2 com a população warm-start da Fase 1."""
+        """Inicia a Fase 2 guardando uma referência imutável da Fase 1."""
         self._gen_episode_records = []
         self._gen_alpha_values = []
+        self._gen_phase1_records = []
+
+        # load_population_from_phase1 anexa o state_dict original à população.
+        # O fallback mantém compatibilidade com populações criadas por código
+        # externo; nesses casos, a primeira rede passa a ser a referência.
+        anchor = getattr(population, "phase1_anchor_state", None)
+        if anchor is None and len(population):
+            anchor = population[0].state_dict()
+        if anchor is not None:
+            self._phase1_anchor_state = {
+                key: tensor.detach().cpu().clone()
+                for key, tensor in anchor.items()
+            }
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            anchor_path = self.output_dir / self._PHASE1_ANCHOR_FILE
+            torch.save(self._phase1_anchor_state, anchor_path)
+            print(f"[phase1-protect] referência imutável salva em {anchor_path}")
+
         super().start_training(population)
 
+    def _evaluate_phase1_regression(self) -> list[dict]:
+        """Avalia cada indivíduo no cenário original de desacoplagem.
+
+        O teste usa as mesmas observações, ações, dinâmica RK4 e função de
+        recompensa da Fase 1. O estado orbital em andamento é preservado e
+        restaurado ao final; a avaliação não altera os acumuladores de treino.
+        """
+        if not self.networks:
+            self._gen_phase1_records = []
+            return []
+
+        # As rotinas de Fase 1 são reutilizadas diretamente, mas certas
+        # constantes da Fase 2 têm valores diferentes (custos/terminais).
+        phase1_constant_names = (
+            "_ALPHA", "_SUCCESS_R_FACTOR", "_ESCAPE_R_FACTOR",
+            "_TIMEOUT_ORBITS", "_PHI_ALT_SCALE", "_PHI_TAN_SCALE",
+            "_C_THRUST", "_C_ROTATE", "_C_TIME",
+            "_TERMINAL_SUCCESS", "_TERMINAL_CRASH", "_TERMINAL_REDOCKED",
+            "_TERMINAL_ESCAPE", "_TERMINAL_FUEL", "_TERMINAL_TIMEOUT",
+            "_SUCCESS_ALIGNMENT_MIN", "_SUCCESS_VT_MIN",
+            "_ALIGNMENT_BONUS_SCALE", "_FUEL_BONUS_SCALE",
+            "_TIME_BONUS_SCALE",
+        )
+        runtime_names = (
+            "world", "host", "rockets", "gravity", "rewards", "alive",
+            "steps", "ever_undocked", "terminal_reasons", "prev_phi",
+            "_v_ref", "_episode_step", "_episode_max_steps",
+            "_episode_success_alignments", "_episode_success_fuel_fracs",
+            "_episode_success_time_fracs",
+        )
+        saved_runtime = {name: getattr(self, name) for name in runtime_names}
+        missing = object()
+        saved_instance_constants = {
+            name: self.__dict__.get(name, missing) for name in phase1_constant_names
+        }
+        previous_compute_phi = self.__dict__.get("_compute_phi", missing)
+        saved_random_state = random.getstate()
+
+        result_accumulators = [
+            {"score": 0.0, "successes": 0, "fuel_remaining": 0.0,
+             "fuel_samples": 0, "terminals": Counter()}
+            for _ in self.networks
+        ]
+
+        try:
+            for name in phase1_constant_names:
+                setattr(self, name, getattr(UndockingTrainer, name))
+
+            # _init_episode_tracking chama self._compute_phi; liga esse método
+            # explicitamente à implementação da Fase 1 durante a avaliação.
+            self._compute_phi = lambda i: UndockingTrainer._compute_phi(self, i)
+
+            dt = max(float(self.config.fixed_timestep), 1e-9)
+            for probe_episode in range(self._PHASE1_REGRESSION_EPISODES):
+                random.seed(
+                    self.base_seed + 7919 + self.generation * 104729 + probe_episode
+                )
+                self.world = World()
+                self.rockets = []
+
+                host_mass = random.uniform(*self._HOST_MASS_RANGE)
+                host_radius = random.uniform(*self._HOST_RADIUS_RANGE)
+                center = pygame.Vector2(
+                    self.sim_config.world_width * 0.5,
+                    self.sim_config.world_height * 0.5,
+                )
+                self.host = self._spawn_host(
+                    mass=host_mass, radius=host_radius, position=center
+                )
+
+                base_angle = random.uniform(0.0, 2.0 * math.pi)
+                count = len(self.networks)
+                for i in range(count):
+                    angle = base_angle + 2.0 * math.pi * i / max(1, count)
+                    self._spawn_rocket_docked(self.host, angle)
+
+                self.gravity = IsolatedHostGravity(
+                    gravitational_constant=self.sim_config.gravitational_constant,
+                    softening=self.sim_config.gravitational_softening,
+                    host_index=0,
+                )
+                UndockingTrainer._init_episode_tracking(self)
+
+                while self._episode_step < self._episode_max_steps and any(self.alive):
+                    self._episode_step += 1
+                    host = self.host
+                    if host is not None and host.active:
+                        for i, (rocket, network) in enumerate(zip(self.rockets, self.networks)):
+                            if network is None or not rocket.active or not self.alive[i]:
+                                continue
+                            obs = UndockingTrainer._build_observation_for(
+                                self, rocket, host, out=self._obs_buffer
+                            )
+                            if obs is None:
+                                continue
+                            try:
+                                UndockingTrainer._apply_network_action(
+                                    self, rocket, network, obs
+                                )
+                            except Exception as exc:
+                                print(f"[phase1-regression] erro de inferência: {exc}")
+
+                    bodies = self.world.entities
+                    self.world.fixed_update(dt)
+                    acceleration = CompositeAccelerationModel(self.gravity, bodies)
+                    self.integrator.step(bodies, dt, acceleration)
+                    for body in bodies:
+                        body.post_integrate()
+
+                    host = self.host
+                    if host is not None and host.active:
+                        for i, rocket in enumerate(self.rockets):
+                            if not self.alive[i]:
+                                continue
+                            if not rocket.active:
+                                self.alive[i] = False
+                                self.terminal_reasons[i] = "destroyed"
+                                continue
+                            UndockingTrainer._update_reward_for(self, i)
+
+                    if (
+                        not any(self.alive)
+                        or self._episode_step >= self._episode_max_steps
+                        or host is None
+                        or not host.active
+                    ):
+                        for i, is_alive in enumerate(self.alive):
+                            if is_alive:
+                                self.rewards[i] += UndockingTrainer._TERMINAL_TIMEOUT
+                                self.alive[i] = False
+                                if self.terminal_reasons[i] is None:
+                                    self.terminal_reasons[i] = "timeout"
+                        break
+
+                    UndockingTrainer._resolve_merges(self)
+                    self.world.purge_inactive()
+
+                for i, rocket in enumerate(self.rockets):
+                    record = result_accumulators[i]
+                    reason = self.terminal_reasons[i] or "timeout"
+                    fuel_fraction = (
+                        _clamp(rocket.fuel / rocket.fuel_max, 0.0, 1.0)
+                        if rocket.fuel_max > 0.0 else 0.0
+                    )
+                    record["score"] += float(self.rewards[i])
+                    record["successes"] += int(reason == "success")
+                    record["terminals"][reason] += 1
+                    if reason == "success":
+                        record["fuel_remaining"] += fuel_fraction
+                        record["fuel_samples"] += 1
+
+            episode_count = max(1, self._PHASE1_REGRESSION_EPISODES)
+            records: list[dict] = []
+            for i, item in enumerate(result_accumulators):
+                score = item["score"] / episode_count
+                success_rate = item["successes"] / episode_count
+                # Normaliza a recompensa da Fase 1 para um sinal auxiliar; o
+                # critério de sucesso continua sendo o terminal real "success".
+                score_quality = _clamp((score + 60.0) / 220.0, 0.0, 1.0)
+                quality = _clamp(0.70 * success_rate + 0.30 * score_quality, 0.0, 1.0)
+                records.append({
+                    "idx": i,
+                    "score": round(float(score), 4),
+                    "success_rate": round(float(success_rate), 4),
+                    "successes": int(item["successes"]),
+                    "episodes": int(episode_count),
+                    "quality": round(float(quality), 4),
+                    "fuel_remaining_on_success": (
+                        round(item["fuel_remaining"] / item["fuel_samples"], 4)
+                        if item["fuel_samples"] else None
+                    ),
+                    "terminals": dict(item["terminals"]),
+                })
+
+            self._gen_phase1_records = records
+            return records
+        finally:
+            for name, value in saved_runtime.items():
+                setattr(self, name, value)
+            for name, value in saved_instance_constants.items():
+                if value is missing:
+                    self.__dict__.pop(name, None)
+                else:
+                    setattr(self, name, value)
+            if previous_compute_phi is missing:
+                self.__dict__.pop("_compute_phi", None)
+            else:
+                self.__dict__["_compute_phi"] = previous_compute_phi
+            random.setstate(saved_random_state)
+
+    def _inject_phase1_anchor(self, population: NeuralPopulation) -> int:
+        """Reserva cópias sem mutação do checkpoint original em cada geração."""
+        if not self._phase1_anchor_state or len(population) <= 1:
+            return 0
+        count = min(
+            self._PHASE1_ANCHOR_COPIES_MAX,
+            max(1, len(population) // 20),
+            len(population) - 1,
+        )
+        start = len(population) - count
+        for i in range(start, len(population)):
+            population[i].load_state_dict(self._phase1_anchor_state, strict=True)
+            population[i].eval()
+        return count
     def _start_episode(self) -> None:
         """Cria um host e põe os foguetes numa órbita circular inferior à meta."""
         random.seed(
@@ -587,10 +829,10 @@ class OrbitRaiseTrainer(UndockingTrainer):
                 1.0 - self.steps[i] / max(1, self._episode_max_steps), 0.0, 1.0
             )
             terminal_reward = (
-                self._TERMINAL_SUCCESS
-                + self._FUEL_BONUS_SCALE * fuel_fraction
-                + self._ORBIT_QUALITY_BONUS_SCALE * orbit_quality
-                + self._TIME_BONUS_SCALE * elapsed_fraction
+                    self._TERMINAL_SUCCESS
+                    + self._FUEL_BONUS_SCALE * fuel_fraction
+                    + self._ORBIT_QUALITY_BONUS_SCALE * orbit_quality
+                    + self._TIME_BONUS_SCALE * elapsed_fraction
             )
             self._finish_rocket(
                 i, "success", terminal_reward, orbit_quality=orbit_quality
@@ -623,13 +865,13 @@ class OrbitRaiseTrainer(UndockingTrainer):
                     ),
                     "band_step_fraction": self._inside_band_steps[i] / max(1, self.steps[i]),
                     "in_band_control_fraction": (
-                        self._in_band_control_steps[i] / max(1, self._inside_band_steps[i])
+                            self._in_band_control_steps[i] / max(1, self._inside_band_steps[i])
                     ),
                     "stable_coast_fraction": (
-                        self._stable_coast_steps[i] / max(1, self._stable_valid_steps_total[i])
+                            self._stable_coast_steps[i] / max(1, self._stable_valid_steps_total[i])
                     ),
                     "stable_valid_step_fraction": (
-                        self._stable_valid_steps_total[i] / max(1, self.steps[i])
+                            self._stable_valid_steps_total[i] / max(1, self.steps[i])
                     ),
                     "mean_stable_radius_error": (
                         self._stable_error_sum[i] / self._stable_band_steps[i]
@@ -656,26 +898,50 @@ class OrbitRaiseTrainer(UndockingTrainer):
         super()._end_episode()
 
     def _end_generation(self) -> None:
-        """Registra métricas, preserva a melhor geração e evolui a população."""
+        """Evolui por fitness multiobjetivo: órbita + desacoplagem preservada."""
         if self.training_done:
             return
 
         population_size = len(self._gen_cumulative)
         divisor = max(1, self.episodes_per_gen)
-        fitness = [reward / divisor for reward in self._gen_cumulative]
-        elapsed = perf_counter() - self._gen_start_time
+        orbit_fitness = [reward / divisor for reward in self._gen_cumulative]
+        phase1_records = self._evaluate_phase1_regression()
+        phase1_by_idx = {int(row["idx"]): row for row in phase1_records}
 
+        # A seleção não pode otimizar apenas a órbita. Ela recebe um bônus
+        # grande por preservar o sucesso na Fase 1 e um bônus menor pela
+        # qualidade/fuel da regressão, mantendo pressão para concluir a órbita.
+        fitness = []
+        for i, score in enumerate(orbit_fitness):
+            regression = phase1_by_idx.get(i, {})
+            success_rate = float(regression.get("success_rate", 0.0))
+            quality = float(regression.get("quality", 0.0))
+            combined = (
+                    score
+                    + self._PHASE1_SUCCESS_BONUS * success_rate
+                    + self._PHASE1_QUALITY_BONUS * quality
+            )
+            fitness.append(combined)
+
+        elapsed = perf_counter() - self._gen_start_time
         best = max(fitness) if fitness else -math.inf
         average = sum(fitness) / len(fitness) if fitness else -math.inf
         composite = best + average if fitness else -math.inf
+        orbit_best = max(orbit_fitness) if orbit_fitness else -math.inf
+        orbit_average = (
+            sum(orbit_fitness) / len(orbit_fitness) if orbit_fitness else -math.inf
+        )
+
         if best > self._best_fitness_ever:
             self._best_fitness_ever = best
             self._best_fitness_gen = self.generation
 
+        # Checkpoint principal: melhor rede no objetivo combinado. Assim, a
+        # rede escolhida é recompensada por aprender a órbita sem esquecer a Fase 1.
         if (
-            composite > self._best_composite_score
-            and self.population is not None
-            and fitness
+                composite > self._best_composite_score
+                and self.population is not None
+                and fitness
         ):
             self._best_composite_score = composite
             self._best_composite_gen = self.generation
@@ -686,29 +952,72 @@ class OrbitRaiseTrainer(UndockingTrainer):
                 for key, tensor in self.population[best_idx].state_dict().items()
             }
 
-        self._write_generation_log(fitness, elapsed)
+        # O checkpoint principal exige sucesso real nos DOIS cenários de
+        # regressão da Fase 1. Uma rede que só aprendeu órbita nunca pode
+        # substituir o melhor modelo dual; enquanto não houver um aprovado,
+        # o checkpoint original continua sendo o fallback seguro.
+        dual_candidates = [
+            i for i, row in enumerate(phase1_records)
+            if float(row.get("success_rate", 0.0)) >= 1.0
+        ]
+        if self.population is not None and dual_candidates:
+            dual_idx = max(
+                dual_candidates,
+                key=lambda i: orbit_fitness[i]
+                              + self._PHASE1_QUALITY_BONUS
+                              * float(phase1_by_idx.get(i, {}).get("quality", 0.0)),
+            )
+            dual_score = (
+                    orbit_fitness[dual_idx]
+                    + self._PHASE1_QUALITY_BONUS
+                    * float(phase1_by_idx.get(dual_idx, {}).get("quality", 0.0))
+            )
+            if dual_score > self._best_dual_score:
+                self._best_dual_score = dual_score
+                self._best_dual_generation = self.generation
+                self._best_dual_phase1_score = float(
+                    phase1_by_idx[dual_idx].get("score", 0.0)
+                )
+                self._best_dual_state = {
+                    key: tensor.detach().clone()
+                    for key, tensor in self.population[dual_idx].state_dict().items()
+                }
+
+        # Mantém também o campeão puramente orbital para comparação, mas ele
+        # nunca substitui o checkpoint dual recomendado.
+        if self.population is not None and orbit_fitness:
+            orbit_idx = max(range(len(orbit_fitness)), key=lambda i: orbit_fitness[i])
+            if orbit_fitness[orbit_idx] > self._best_orbit_only_score:
+                self._best_orbit_only_score = orbit_fitness[orbit_idx]
+                self._best_orbit_only_state = {
+                    key: tensor.detach().clone()
+                    for key, tensor in self.population[orbit_idx].state_dict().items()
+                }
+
+        self._write_generation_log(
+            fitness, elapsed, orbit_fitness=orbit_fitness, phase1_records=phase1_records
+        )
 
         records = self._gen_episode_records
         successes = [row for row in records if row["terminal"] == "success"]
         total_episodes = max(1, population_size * self.episodes_per_gen)
         success_rate = len(successes) / total_episodes
-        mean_peak_orbit = _mean(
-            [float(row["peak_orbit_progress"]) for row in records]
+        mean_peak_orbit = _mean([float(row["peak_orbit_progress"]) for row in records])
+        mean_max_radius = _mean([float(row["max_radius_over_target"]) for row in records])
+        mean_fuel_used = _mean([float(row["fuel_used_frac"]) for row in records])
+        mean_success_fuel = _mean([float(row["fuel_used_frac"]) for row in successes])
+        phase1_success_rate = (
+            sum(float(row["success_rate"]) for row in phase1_records) / len(phase1_records)
+            if phase1_records else 0.0
         )
-        mean_max_radius = _mean(
-            [float(row["max_radius_over_target"]) for row in records]
-        )
-        mean_fuel_used = _mean(
-            [float(row["fuel_used_frac"]) for row in records]
-        )
-        mean_success_fuel = _mean(
-            [float(row["fuel_used_frac"]) for row in successes]
-        )
+        phase1_mean_score = _mean([float(row["score"]) for row in phase1_records]) or 0.0
 
         print(
             f"[phase2 gen {self.generation:3d}] "
-            f"best={best:+8.2f} avg={average:+8.2f} comp={composite:+8.2f}  "
-            f"succ={success_rate:5.1%}  "
+            f"dual_best={best:+8.2f} dual_avg={average:+8.2f}  "
+            f"orbit_best={orbit_best:+8.2f} orbit_avg={orbit_average:+8.2f}  "
+            f"succ_orbita={success_rate:5.1%}  "
+            f"desacop={phase1_success_rate:5.1%} (score={phase1_mean_score:+.1f})  "
             f"rmax/alvo={mean_max_radius if mean_max_radius is not None else 0.0:.3f}  "
             f"órbita={mean_peak_orbit if mean_peak_orbit is not None else 0.0:.1%}  "
             f"comb={mean_fuel_used if mean_fuel_used is not None else 0.0:.1%} "
@@ -724,7 +1033,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
             self.stop()
             return
 
-        self.population = self.population.evolve(
+        evolved = self.population.evolve(
             fitness,
             method=self.method,
             elite_count=self.elite_count,
@@ -733,9 +1042,16 @@ class OrbitRaiseTrainer(UndockingTrainer):
             seed=self.base_seed + self.generation + 1,
             tournament_size=self._TOURNAMENT_SIZE,
         )
+        anchor_copies = self._inject_phase1_anchor(evolved)
+        self.population = evolved
         self.networks = list(self.population)
-        self.generation += 1
+        if anchor_copies:
+            print(
+                f"[phase1-protect] {anchor_copies} cópias intactas do checkpoint "
+                "foram reinseridas na próxima geração."
+            )
 
+        self.generation += 1
         self._gen_cumulative = [0.0] * len(self.networks)
         self._gen_terminal_counts = {}
         self._gen_success_alignments = []
@@ -745,14 +1061,22 @@ class OrbitRaiseTrainer(UndockingTrainer):
         self._gen_start_time = perf_counter()
         self._gen_episode_records = []
         self._gen_alpha_values = []
+        self._gen_phase1_records = []
         self._start_episode()
 
     def _write_generation_log(
-        self, fitness: list[float], gen_dt: float
+            self, fitness: list[float], gen_dt: float,
+            orbit_fitness: Optional[list[float]] = None,
+            phase1_records: Optional[list[dict]] = None,
     ) -> None:
         """Grava uma linha JSONL com estatísticas globais e de cada indivíduo."""
         if not fitness:
             return
+        if orbit_fitness is None:
+            orbit_fitness = list(fitness)
+        if phase1_records is None:
+            phase1_records = self._gen_phase1_records
+        phase1_by_idx = {int(row["idx"]): row for row in phase1_records}
         self.output_dir.mkdir(parents=True, exist_ok=True)
         ordered = sorted(fitness)
         count = len(fitness)
@@ -775,6 +1099,9 @@ class OrbitRaiseTrainer(UndockingTrainer):
             individuals.append({
                 "idx": i,
                 "fitness": round(float(score), 4),
+                "combined_fitness": round(float(score), 4),
+                "orbit_fitness": round(float(orbit_fitness[i]), 4),
+                "phase1_regression": phase1_by_idx.get(i, {}),
                 "successes": int(terminals.get("success", 0)),
                 "terminals": dict(terminals),
                 "mean_max_radius_over_target": round(
@@ -830,7 +1157,7 @@ class OrbitRaiseTrainer(UndockingTrainer):
         entry = {
             "event": "generation",
             "phase": "orbit_raise",
-            "reward_profile": "minimum_fuel_coasting_v2",
+            "reward_profile": "minimum_fuel_coasting_dual_task_v3",
             "gen": int(self.generation),
             "episodes_per_net": int(self.episodes_per_gen),
             "wall_time_s": round(float(gen_dt), 3),
@@ -862,68 +1189,97 @@ class OrbitRaiseTrainer(UndockingTrainer):
                 "std": round(float(math.sqrt(variance)), 4),
                 "min": round(float(ordered[0]), 4),
             },
-            "success_rate": round(len(successes) / total, 4),
-            "metrics": {
-                "mean_max_radius_over_target": round(
-                    optional_mean(records, "max_radius_over_target") or 0.0, 4
-                ),
-                "mean_peak_orbit_progress": round(
-                    optional_mean(records, "peak_orbit_progress") or 0.0, 4
-                ),
-                "mean_fuel_used_frac": round(
-                    optional_mean(records, "fuel_used_frac") or 0.0, 4
-                ),
-                "mean_fuel_used_frac_on_success": round(
-                    optional_mean(successes, "fuel_used_frac") or 0.0, 4
-                ),
-                "mean_fuel_remaining_frac_on_success": round(
-                    optional_mean(successes, "fuel_remaining_frac") or 0.0, 4
-                ),
-                "mean_band_step_fraction": round(
-                    optional_mean(records, "band_step_fraction") or 0.0, 4
-                ),
-                "mean_in_band_control_fraction": round(
-                    optional_mean(records, "in_band_control_fraction") or 0.0, 4
-                ),
-                "mean_stable_coast_fraction": round(
-                    optional_mean(records, "stable_coast_fraction") or 0.0, 4
-                ),
-                "mean_stable_valid_step_fraction": round(
-                    optional_mean(records, "stable_valid_step_fraction") or 0.0, 4
-                ),
-                "mean_stable_radial_speed_error": round(
-                    optional_mean([
-                        row for row in records
-                        if row["mean_stable_radial_speed_error"] is not None
-                    ], "mean_stable_radial_speed_error") or 0.0, 4
-                ),
-                "mean_stable_tangential_speed_error": round(
-                    optional_mean([
-                        row for row in records
-                        if row["mean_stable_tangential_speed_error"] is not None
-                    ], "mean_stable_tangential_speed_error") or 0.0, 4
-                ),
-                "mean_thrust_steps": round(
-                    optional_mean(records, "thrust_steps") or 0.0, 2
-                ),
-                "mean_rotation_steps": round(
-                    optional_mean(records, "rotation_steps") or 0.0, 2
-                ),
+            "orbit_fitness": {
+                "best": round(float(max(orbit_fitness)), 4),
+                "avg": round(float(sum(orbit_fitness) / len(orbit_fitness)), 4),
+                "min": round(float(min(orbit_fitness)), 4),
             },
-            "terminals": dict(self._gen_terminal_counts),
-            "best_idx": int(best_idx),
-            "best_fitness_ever": (
-                round(float(self._best_fitness_ever), 4)
-                if self._best_fitness_ever != -math.inf else None
+            "selection_objective": "orbit_plus_phase1_regression",
+            "phase1_regression": {
+                "success_rate": round(
+                sum(float(row["success_rate"]) for row in phase1_records)
+                / max(1, len(phase1_records)), 4
             ),
-            "best_fitness_gen": self._best_fitness_gen if self._best_fitness_gen >= 0 else None,
-            "best_composite_score": (
-                round(float(self._best_composite_score), 4)
-                if self._best_composite_score != -math.inf else None
+            "mean_score": round(
+                sum(float(row["score"]) for row in phase1_records)
+                / max(1, len(phase1_records)), 4
             ),
-            "best_composite_gen": self._best_composite_gen if self._best_composite_gen >= 0 else None,
-            "individuals": individuals,
-        }
+            "success_bonus": self._PHASE1_SUCCESS_BONUS,
+            "quality_bonus": self._PHASE1_QUALITY_BONUS,
+            "anchor_copies_max": self._PHASE1_ANCHOR_COPIES_MAX,
+            "individuals": phase1_records,
+        },
+        "success_rate": round(len(successes) / total, 4),
+        "metrics": {
+            "mean_max_radius_over_target": round(
+                optional_mean(records, "max_radius_over_target") or 0.0, 4
+            ),
+            "mean_peak_orbit_progress": round(
+                optional_mean(records, "peak_orbit_progress") or 0.0, 4
+            ),
+            "mean_fuel_used_frac": round(
+                optional_mean(records, "fuel_used_frac") or 0.0, 4
+            ),
+            "mean_fuel_used_frac_on_success": round(
+                optional_mean(successes, "fuel_used_frac") or 0.0, 4
+            ),
+            "mean_fuel_remaining_frac_on_success": round(
+                optional_mean(successes, "fuel_remaining_frac") or 0.0, 4
+            ),
+            "mean_band_step_fraction": round(
+                optional_mean(records, "band_step_fraction") or 0.0, 4
+            ),
+            "mean_in_band_control_fraction": round(
+                optional_mean(records, "in_band_control_fraction") or 0.0, 4
+            ),
+            "mean_stable_coast_fraction": round(
+                optional_mean(records, "stable_coast_fraction") or 0.0, 4
+            ),
+            "mean_stable_valid_step_fraction": round(
+                optional_mean(records, "stable_valid_step_fraction") or 0.0, 4
+            ),
+            "mean_stable_radial_speed_error": round(
+                optional_mean([
+                    row for row in records
+                    if row["mean_stable_radial_speed_error"] is not None
+                ], "mean_stable_radial_speed_error") or 0.0, 4
+            ),
+            "mean_stable_tangential_speed_error": round(
+                optional_mean([
+                    row for row in records
+                    if row["mean_stable_tangential_speed_error"] is not None
+                ], "mean_stable_tangential_speed_error") or 0.0, 4
+            ),
+            "mean_thrust_steps": round(
+                optional_mean(records, "thrust_steps") or 0.0, 2
+            ),
+            "mean_rotation_steps": round(
+                optional_mean(records, "rotation_steps") or 0.0, 2
+            ),
+        },
+        "terminals": dict(self._gen_terminal_counts),
+        "best_idx": int(best_idx),
+        "best_fitness_ever": (
+            round(float(self._best_fitness_ever), 4)
+            if self._best_fitness_ever != -math.inf else None
+        ),
+        "best_fitness_gen": self._best_fitness_gen if self._best_fitness_gen >= 0 else None,
+        "best_composite_score": (
+            round(float(self._best_composite_score), 4)
+            if self._best_composite_score != -math.inf else None
+        ),
+        "best_composite_gen": self._best_composite_gen if self._best_composite_gen >= 0 else None,
+        "best_dual_checkpoint": {
+            "generation": self._best_dual_generation if self._best_dual_generation >= 0 else None,
+            "orbit_plus_quality_score": (
+                round(float(self._best_dual_score), 4)
+                if self._best_dual_score != -math.inf else None
+            ),
+            "phase1_regression_score": self._best_dual_phase1_score,
+            "requires_phase1_regression_success_rate": 1.0,
+        },
+        "individuals": individuals,
+    }
         with self.log_path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -997,21 +1353,51 @@ class OrbitRaiseTrainer(UndockingTrainer):
         )
 
     def _save_best_ever(self) -> None:
-        """Salva a melhor rede encontrada na Fase 2."""
-        if self._best_ever_state is None:
-            print("[shutdown] Fase 2 sem geração concluída; nada a salvar.")
+        """Salva o melhor modelo dual aprovado na regressão da Fase 1."""
+        # Nunca gravamos um modelo puramente orbital como checkpoint principal.
+        # Se ainda não houve uma rede que passe na Fase 1, o fallback é a cópia
+        # exata da Fase 1, mantendo a habilidade original em vez de a perder.
+        state_to_save = self._best_dual_state or self._phase1_anchor_state
+        if state_to_save is None:
+            print("[shutdown] Não há checkpoint dual nem âncora da Fase 1 para salvar.")
             return
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            path = self.output_dir / "phase2_best.pt"
-            torch.save(self._best_ever_state, path)
-            print(
-                f"[save] melhor rede da Fase 2: composite={self._best_composite_score:+.2f} "
-                f"(gen {self._best_composite_gen}), "
-                f"fitness={self._best_composite_fitness:+.2f} -> {path}"
+            main_paths = (
+                self.output_dir / "phase2_best.pt",
+                self.output_dir / "phase2_best_dual.pt",
             )
+            for path in main_paths:
+                torch.save(state_to_save, path)
+
+            # Checkpoint de diagnóstico separado: pode ter ótima órbita, mas não
+            # necessariamente passa no teste de regressão da desacoplagem.
+            if self._best_orbit_only_state is not None:
+                torch.save(
+                    self._best_orbit_only_state,
+                    self.output_dir / "phase2_best_orbit_only.pt",
+                )
+            if self._best_ever_state is not None:
+                torch.save(
+                    self._best_ever_state,
+                    self.output_dir / "phase2_best_combined_score.pt",
+                )
+
+            if self._best_dual_state is not None:
+                print(
+                    f"[save] melhor rede aprovada nas duas tarefas: "
+                    f"gen={self._best_dual_generation}, "
+                    f"score_dual={self._best_dual_score:+.2f}, "
+                    f"score_Fase1={self._best_dual_phase1_score:+.2f} -> {main_paths[0]}"
+                )
+            else:
+                print(
+                    "[save] nenhuma rede passou na regressão da Fase 1; "
+                    f"checkpoint principal preserva a âncora original -> {main_paths[0]}"
+                )
+            print("[save] phase2_best_orbit_only.pt é apenas diagnóstico; não é o modelo dual recomendado.")
         except Exception as exc:
-            print(f"[shutdown] falha ao salvar checkpoint da Fase 2: {exc}")
+            print(f"[shutdown] falha ao salvar checkpoint dual da Fase 2: {exc}")
 
 
 def load_population_from_phase1(
@@ -1071,8 +1457,16 @@ def load_population_from_phase1(
                     )
                     parameter.add_(noise * diversity_std)
 
+    # Metadado usado pelo OrbitRaiseTrainer para preservar o checkpoint
+    # original durante toda a evolução. A referência é uma cópia profunda.
+    population.phase1_anchor_state = {
+        key: tensor.detach().cpu().clone()
+        for key, tensor in state_dict.items()
+    }
+
     print(
         f"[warm-start] {elite_count} elites clonadas de {checkpoint_path}; "
         f"{size - elite_count} indivíduos diversificados (std={diversity_std:.3f})."
     )
+    print("[warm-start] checkpoint original da Fase 1 configurado como âncora protegida.")
     return population
