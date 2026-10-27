@@ -104,7 +104,7 @@ class TrajectoryVisualizer:
         gravity: NewtonianGravity,
         fixed_delta_time: float,
         focus_entities=None,
-    ) -> float | None:
+    ) -> float:
         """Prevê e desenha a trajetória futura dos corpos.
 
         Colisões não interrompem a predição: pares sobrepostos são
@@ -134,13 +134,11 @@ class TrajectoryVisualizer:
         focus_entities = tuple(focus_entities or ())
 
         if not self.enabled and not focus_entities:
-            return None
+            return 0.0
         if not bodies:
-            return None
+            return 0.0
         if fixed_delta_time <= 0.0:
-            return None
-        if pygame.event.peek(pygame.QUIT):
-            return None
+            return 0.0
 
         start = perf_counter()
 

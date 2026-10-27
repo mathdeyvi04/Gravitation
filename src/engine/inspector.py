@@ -18,10 +18,11 @@ _BORDER_COLOR = (180, 180, 180)
 
 @dataclass(frozen=True)
 class InspectionProperty:
-    """Propriedade exibível no inspector.
+    """@brief Propriedade exibível no inspector.
 
-    `getter` extrai o valor de uma entidade; `formatter` o converte em
-    string para exibição. Ambos recebem a entidade como argumento.
+    @details `getter` extrai o valor de uma entidade; `formatter` o
+    converte em string para exibição. Ambos recebem a entidade como
+    argumento.
 
     `widget`, quando presente, é um callable
     `(entidade, renderer, rect) -> None` invocado logo abaixo da linha
@@ -35,16 +36,19 @@ class InspectionProperty:
     getter: Callable[[Any], Any]
     formatter: Callable[[Any], str]
     widget: Optional[Callable[[Any, Any, pygame.Rect], None]] = None
+    primary: Optional[AnyGrav] = None
+    reference: Optional[AnyGrav] = None
 
 class RelationInspector:
-    """
-    Mantém o corpo de referência e as propriedades relacionais.
+    """@brief Mantém o corpo de referência e as propriedades relacionais.
 
-    O corpo principal continua sendo responsabilidade do Inspector.
+    @details O corpo principal continua sendo responsabilidade do
+    `Inspector`.
     """
 
     def __init__(self) -> None:
-        self._reference: Entity | None = None
+        """@brief Inicializa sem referência e sem registros."""
+        self._reference: AnyGrav | None = None
 
         self._registry: dict[
             tuple[type, type],
@@ -56,13 +60,22 @@ class RelationInspector:
 
     def register(
         self,
-        primary_type: type[Entity],
-        reference_type: type[Entity],
+        primary_type: type[AnyGrav],
+        reference_type: type[AnyGrav],
         context_factory: Callable[[Any, Any], Any],
         *properties: InspectionProperty,
     ) -> None:
-        """Registra uma análise entre dois tipos de entidade."""
+        """@brief Registra uma análise entre dois tipos de entidade.
 
+        @details `context_factory` é chamada sob demanda com
+        `(primary, reference)`; o resultado é passado aos getters
+        das propriedades relacionais.
+
+        @param primary_type Tipo do corpo principal.
+        @param reference_type Tipo do corpo de referência.
+        @param context_factory Fábrica do contexto compartilhado.
+        @param properties Propriedades relacionais exibíveis.
+        """
         self._registry[
             (primary_type, reference_type)
         ] = (
@@ -72,15 +85,28 @@ class RelationInspector:
 
     def select_reference(
         self,
-        entity: Entity | None,
+        entity: AnyGrav | None,
     ) -> None:
+        """@brief Define (ou limpa) o corpo de referência.
+
+        @param entity Corpo de referência; `None` desliga a análise
+            relacional.
+        """
         self._reference = entity
 
     def clear(self) -> None:
+        """@brief Remove a referência atual."""
         self._reference = None
 
     @property
-    def reference(self) -> Entity | None:
+    def reference(self) -> AnyGrav | None:
+        """@brief Referência ativa, ou `None` se ausente/inativa.
+
+        @details Uma referência destruída é tratada como ausente, sem
+        que o chamador precise limpar o estado.
+
+        @return A referência ou `None`.
+        """
         if (
             self._reference is None
             or not self._reference.active
@@ -91,8 +117,17 @@ class RelationInspector:
 
     def _get_registration(
         self,
-        primary: Entity,
+        primary: AnyGrav,
     ):
+        """@brief Resolve o registro aplicável ao par de tipos via MRO.
+
+        @details Percorre a MRO de ambos os tipos (principal e
+        referência) e devolve o primeiro registro encontrado — o que
+        permite que subclasses herdem o registro da classe-mãe.
+
+        @param primary Corpo principal.
+        @return `(context_factory, properties)` ou `None`.
+        """
         reference = self.reference
 
         if reference is None:
@@ -115,11 +150,19 @@ class RelationInspector:
 
     def get_context(
         self,
-        primary: Entity,
+        primary: AnyGrav,
     ) -> Any | None:
+        """@brief Constrói o contexto compartilhado para o par atual.
 
+        @details Devolve `None` se não há referência, se a referência
+        é o próprio corpo principal, ou se não há registro aplicável.
+
+        @param primary Corpo principal.
+        @return Contexto produzido por `context_factory`, ou `None`.
+        """
         reference = self.reference
 
+        # Sem referência distinta do principal, não há relação a exibir.
         if reference is None or reference is primary:
             return None
 
@@ -137,9 +180,13 @@ class RelationInspector:
 
     def get_properties(
         self,
-        primary: Entity,
+        primary: AnyGrav,
     ) -> tuple[InspectionProperty, ...]:
+        """@brief Propriedades relacionais registradas para o par atual.
 
+        @param primary Corpo principal.
+        @return Tupla de propriedades; `()` se não houver registro.
+        """
         registration = self._get_registration(primary)
 
         if registration is None:
@@ -151,17 +198,17 @@ class RelationInspector:
 
 
 class Inspector:
-    """Consulta propriedades da entidade selecionada.
+    """@brief Consulta propriedades da entidade selecionada.
 
-    Não conhece tipos concretos de entidade: o tipo-alvo e suas
-    propriedades são registrados externamente via `register`. A
-    resolução de propriedades percorre a MRO, então uma subclasse
-    herda o registro da classe-mãe se não tiver o próprio.
+    @details Não conhece tipos concretos de entidade: o tipo-alvo e
+    suas propriedades são registrados externamente via `register`. A
+    resolução de propriedades percorre a MRO, então uma subclasse herda
+    o registro da classe-mãe se não tiver o próprio.
     """
 
     def __init__(self) -> None:
-        """Inicializa sem entidade selecionada e sem registros."""
-        self._selected: Entity | None = None
+        """@brief Inicializa sem entidade selecionada e sem registros."""
+        self._selected: AnyGrav | None = None
         self._registry: dict[
             type,
             tuple[InspectionProperty, ...],
@@ -169,40 +216,52 @@ class Inspector:
 
     def register(
         self,
-        entity_type: type[Entity],
+        entity_type: type[AnyGrav],
         *properties: InspectionProperty,
     ) -> None:
-        """Associa `properties` ao tipo `entity_type`.
+        """@brief Associa `properties` ao tipo `entity_type`.
 
-        Sobrescreve o registro anterior do mesmo tipo, se houver.
+        @details Sobrescreve o registro anterior do mesmo tipo, se
+        houver.
+
+        @param entity_type Tipo registrado.
+        @param properties Propriedades exibíveis para esse tipo.
         """
         self._registry[entity_type] = tuple(properties)
 
-    def select(self, entity: Entity | None) -> None:
-        """Define a entidade a ser inspecionada. `None` desseleciona."""
+    def select(self, entity: AnyGrav | None) -> None:
+        """@brief Define a entidade a ser inspecionada.
+
+        @param entity Entidade a inspecionar; `None` desseleciona.
+        """
         self._selected = entity
 
     def clear(self) -> None:
-        """Remove a seleção atual."""
+        """@brief Remove a seleção atual."""
         self._selected = None
 
     @property
-    def selected(self) -> Entity | None:
-        """Entidade selecionada, ou `None` se estiver inativa ou ausente.
+    def selected(self) -> AnyGrav | None:
+        """@brief Entidade selecionada, ou `None` se inativa/ausente.
 
-        Uma entidade destruída (`active == False`) é tratada como
-        desselecionada, sem que o chamador precise limpar o estado.
+        @details Uma entidade destruída (`active == False`) é tratada
+        como desselecionada, sem que o chamador precise limpar o
+        estado.
+
+        @return A entidade selecionada ou `None`.
         """
         if self._selected is None or not self._selected.active:
             return None
         return self._selected
 
     def get_properties(self) -> tuple[InspectionProperty, ...]:
-        """Propriedades registradas para o tipo da entidade selecionada.
+        """@brief Propriedades registradas para o tipo selecionado.
 
-        Retorna a primeira tupla encontrada ao percorrer a MRO do tipo,
-        permitindo herança de registro. Retorna `()` se não há seleção
-        ou nenhum ancestral foi registrado.
+        @details Retorna a primeira tupla encontrada ao percorrer a MRO
+        do tipo, permitindo herança de registro.
+
+        @return Tupla de propriedades; `()` se não houver seleção ou
+            registro.
         """
         entity = self.selected
         if entity is None:
@@ -217,10 +276,10 @@ class Inspector:
 
 
 class InspectorHUD:
-    """Painel de inspeção desenhado no canto superior esquerdo.
+    """@brief Painel de inspeção desenhado no canto superior esquerdo.
 
-    Lê a entidade selecionada e suas propriedades registradas pelo
-    `Inspector` e as apresenta como um retângulo com título e uma
+    @details Lê a entidade selecionada e suas propriedades registradas
+    pelo `Inspector` e as apresenta como um retângulo com título e uma
     linha por propriedade. O HUD não conhece tipos concretos de
     entidade — apenas consome o que o `Inspector` expõe.
     """
@@ -238,20 +297,27 @@ class InspectorHUD:
         property_size: int = 20,
         line_spacing: int = 6,
     ) -> None:
-        """Configura as métricas de layout do painel.
+        """@brief Configura as métricas de layout do painel.
 
-        `margin` afasta o painel da borda da tela; `padding` afasta o
-        conteúdo das bordas internas do painel. `title_size` e
-        `property_size` são os tamanhos de fonte do título e das
-        linhas, e `line_spacing` é o espaço vertical entre linhas
-        consecutivas. `WIDGET_HEIGHT` é a altura reservada para o
-        widget opcional de cada `InspectionProperty`.
+        @details `margin` afasta o painel da borda da tela; `padding`
+        afasta o conteúdo das bordas internas. `title_size` e
+        `property_size` são os tamanhos de fonte do título e das linhas;
+        `line_spacing` é o espaço vertical entre linhas consecutivas.
+
+        @param margin Distância até a borda da tela, em pixels.
+        @param padding Distância entre borda do painel e conteúdo.
+        @param title_size Tamanho da fonte do título.
+        @param property_size Tamanho da fonte das linhas.
+        @param line_spacing Espaço vertical entre linhas.
         """
         self.margin = margin
         self.padding = padding
         self.title_size = title_size
         self.property_size = property_size
         self.line_spacing = line_spacing
+        self._cached_width = 0
+        self._last_entity_id: int | None = None
+        self._last_reference_id: int | None = None
 
     @staticmethod
     def _measure_into(
@@ -260,7 +326,14 @@ class InspectorHUD:
         size: int,
         current_max: int,
     ) -> int:
-        """Mede `text` em `size` e devolve `max(current_max, largura)`."""
+        """@brief Mede `text` e devolve o máximo com `current_max`.
+
+        @param renderer Renderizador usado para medir.
+        @param text Texto a medir.
+        @param size Tamanho da fonte.
+        @param current_max Máximo acumulado até agora.
+        @return `max(current_max, largura de text)`.
+        """
         width, _ = renderer.measure_text(text, size=size)
         return width if width > current_max else current_max
 
@@ -270,13 +343,22 @@ class InspectorHUD:
         inspector: Inspector,
         relation_inspector: RelationInspector | None = None,
     ) -> None:
-        """Desenha o painel se houver entidade selecionada com propriedades.
+        """@brief Desenha o painel de inspeção, se houver seleção.
 
-        Não faz nada quando não há seleção ou quando o tipo da entidade
-        não tem propriedades registradas. As propriedades do corpo
-        principal saem em branco (mesma cor do anel de seleção); as que
-        dependem do corpo de referência saem em laranja (mesma cor do
-        anel de referência), incluindo o cabeçalho da seção.
+        @details Não faz nada quando não há seleção ou quando o tipo da
+        entidade não tem propriedades registradas. Propriedades do corpo
+        principal saem em branco; as que dependem da referência saem em
+        laranja, incluindo o cabeçalho da seção.
+
+        A largura do painel é estabilizada por um cache monotônico: o
+        conteúdo muda a cada frame e recalcular a largura a partir do
+        texto atual faria o painel tremer. A chave do cache é
+        `(id(entidade), id(referência))` — troca de par descarta o
+        cache; mesma seleção, a largura só cresce.
+
+        @param renderer Renderizador alvo.
+        @param inspector Inspector com a seleção atual.
+        @param relation_inspector Inspector relacional opcional.
         """
         entity = inspector.selected
 
@@ -301,7 +383,25 @@ class InspectorHUD:
                 if relation_context is not None:
                     relation_properties = relation_inspector.get_properties(entity)
 
-        title = f"CORPO: {type(entity).__name__}"
+        # -- Estabilização da largura ----------------------------------
+        # A chave de cache é o par (entidade, referência). Quando
+        # qualquer um dos dois muda, o cache é descartado: o painel
+        # parte do zero e cresce até caber o conteúdo atual. Enquanto
+        # a chave for a mesma, `_cached_width` funciona como piso — a
+        # largura só cresce, nunca encolhe, e os números que oscilam
+        # no texto não propagam para o retângulo.
+        entity_id = id(entity)
+        reference_id = id(reference) if reference is not None else None
+
+        if (
+                entity_id != self._last_entity_id
+                or reference_id != self._last_reference_id
+        ):
+            self._cached_width = 0
+            self._last_entity_id = entity_id
+            self._last_reference_id = reference_id
+
+        title = type(entity).__name__
 
         title_width, title_height = renderer.measure_text(
             title,
@@ -320,6 +420,8 @@ class InspectorHUD:
 
             primary_lines.append(line)
 
+            # A chave é o índice da linha já formatada — o widget é
+            # desenhado logo abaixo dela.
             if property_.widget is not None:
                 primary_widgets[len(primary_lines) - 1] = property_.widget
 
@@ -338,9 +440,11 @@ class InspectorHUD:
                 and relation_properties
         ):
             reference_title = (
-                f"REFERÊNCIA: {type(reference).__name__}"
+                type(reference).__name__
             )
 
+            # O cabeçalho entra como primeira linha; a cor laranja
+            # aplica-se a toda a seção na hora de desenhar.
             reference_lines.append(reference_title)
 
             max_width = self._measure_into(
@@ -365,9 +469,21 @@ class InspectorHUD:
                     max_width,
                 )
 
+        # Aplica o piso e atualiza o cache. A ordem importa: primeiro o
+        # piso é imposto à largura deste frame, depois o cache é
+        # atualizado com o resultado — assim `_cached_width` reflete
+        # exatamente o que foi desenhado e nunca decresce dentro de uma
+        # mesma seleção.
+        if max_width < self._cached_width:
+            max_width = self._cached_width
+        else:
+            self._cached_width = max_width
+
         total_lines = len(primary_lines) + len(reference_lines)
         widget_count = len(primary_widgets)
 
+        # Altura de linha via "Ag": aproxima o limite superior das
+        # letras e evita depender do tamanho em pontos da fonte.
         line_height = renderer.measure_text(
             "Ag",
             size=self.property_size,
@@ -414,6 +530,7 @@ class InspectorHUD:
 
             y += line_height + self.line_spacing
 
+            # Widget, se houver, ocupa a faixa logo abaixo da linha.
             widget = primary_widgets.get(idx)
             if widget is not None:
                 widget_rect = pygame.Rect(

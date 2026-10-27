@@ -1,78 +1,125 @@
-# Simulação Gravitacional de N Corpos
+# Gravitation — Simulação gravitacional de N corpos
 
-Um ambiente interativo de simulação gravitacional construído em Python com Pygame, onde corpos massivos interagem por atração newtoniana, colidem, fundem-se e são inspecionados em tempo real por meio de uma interface pensada para exploração e depuração.
+Simulação 2D de gravitação newtoniana em Pygame, com um foguete
+controlável que pode desacoplar de um corpo, voar e pousar em outro.
+Inclui visualização de forças, previsão de trajetória, inspector de
+elementos orbitais e um módulo de treinamento por redes neurais
+(opcional) que ensina o foguete a realizar manobras sozinho.
 
-O projeto começou como uma experiência de física com uma janela e alguns círculos e evoluiu para um arcabouço com separação de responsabilidades bem definida: um motor de aplicação genérico, um modelo físico independente do desenho, um contêiner de entidades reaproveitável e uma cena concreta que orquestra a simulação. Cada camada pode ser substituída sem tocar nas outras.
+## O que o simulador faz
 
----
+- **Física N-corpos** com integração RK4 em passo fixo (120 Hz).
+- **Fusão de corpos**: colisões a alta velocidade absorvem o menor
+  (massa, momento e volume conservados); contato lento é tratado como
+  pouso.
+- **Foguete controlável**: rotação e propulsão, tanque de combustível,
+  acoplamento/desacoplagem por colisão inelástica.
+- **Previsão de trajetória futura** (`T`): simula a evolução do sistema
+  por N passos sem alterar o estado real.
+- **Vetores de força** (`F`): setas proporcionais à força gravitacional
+  resultante sobre cada corpo.
+- **Inspector de corpos**: painel com massa, raio, velocidade, elementos
+  orbitais relativos (excentricidade, periastro, apoastro, período,
+  Δv de escape) e custo de manobras de desacoplagem/acoplagem.
+- **Câmera** com zoom ancorado no cursor, pan e modo "seguir".
+- **Sistema estelar gerado proceduralmente**: estrelas, planetas, luas
+  e meteoros em órbitas estáveis.
 
-## Arquitetura geral
+## Requisitos
 
-O projeto está dividido em três grandes blocos:
+- Python 3.10+
+- `pip install pygame numpy torch matplotlib`
 
-- **`src/engine/`** — infraestrutura reutilizável: `Application`, `Clock`, `Renderer`, `Camera2D`, `Background`, `Input`, `World`, além dos visualizadores (`VectorVisualizer`, `TrajectoryVisualizer`), do picker (`EntityPicker`) e do sistema de inspeção (`Inspector`, `RelationInspector`, `InspectorHUD`).
-- **`src/entities/`** — tipos de objeto: a base abstrata `Entity` e sua implementação concreta `MassObject`.
-- **`src/physics/`** — modelo físico: `NewtonianGravity`, os integradores (`SemiImplicitEulerIntegrator`, `RK4Integrator`) e o cálculo de órbitas relativas (`RelativeOrbit2D`).
+(`torch` e `matplotlib` só são necessários para o treinamento e para os
+relatórios de memória; a simulação interativa roda apenas com `pygame`.)
 
-A cena concreta (`Gravitation`, em `src/main.py`) é quem amarra tudo: ela decide a ordem do passo físico, a política de fusão e como os dados são apresentados.
+## Como executar
 
-Nada em `engine/` sabe o que é um corpo com massa. Nada em `entities/` sabe como o tempo passa. Nada em `physics/` sabe que existe uma tela. Essa separação é o que permite, por exemplo, usar a `World` em outro projeto que só precise de um contêiner de entidades com ciclo de vida, ou trocar o integrador sem mexer no `MassObject`.
+**Simulação interativa (modo padrão):**
+```bash
+python -m src.main
+```
 
----
+Abre a cena com um sistema estelar aleatório e o foguete acoplado a um
+planeta. A câmera nasce apontada para o foguete.
 
-## Corpos e entidades
+**Opções de linha de comando:**
+```bash
+python -m src.main --model CAMINHO          # carrega uma política treinada
+python -m src.main --monitor-memory         # grava snapshots do tracemalloc
+```
 
-Toda entidade herda de `Entity`, uma classe abstrata que define o contrato mínimo: `update`, `fixed_update`, `render`, mais os métodos opcionais `hit_test`, `click_distance`, `get_world_bounds`, `is_visible`, `render_selection` e o hook `on_destroy`. O ciclo de vida é gerenciado na própria base: `destroy()` marca `active = False` de forma idempotente e dispara o hook.
+### Controles
 
-O `MassObject` é a implementação concreta central. Ele carrega massa, raio, cor, posição, velocidade, e mantém um `previous_position` para interpolação visual. Ele sabe:
+| Tecla / botão | Ação |
+|---------------|------|
+| ← / → | Rotacionar o foguete |
+| Espaço | Propulsão |
+| Scroll | Zoom ancorado no cursor |
+| Botão esquerdo | Pan (arrasto) / selecionar corpo (clique) |
+| Botão direito | Definir corpo de referência do inspector |
+| ↑ / ↓ | Ajustar `α` do foguete (raio-alvo em múltiplos de `R_host`) |
+| V | Seguir o corpo selecionado |
+| F | Exibir vetores de força |
+| T | Exibir trajetória futura |
+| I | Alternar entre controle do jogador e rede neural |
 
-- **Colidir**: `overlaps(other)` responde se dois discos se sobrepõem.
-- **Fundir-se**: `merge_with(other)` absorve outro corpo conservando massa, momento linear e volume (raio recalculado por `r ∝ m^(1/3)`), respeitando densidade uniforme.
-- **Ser clicado**: `hit_test` responde se um ponto está dentro do disco; `click_distance` responde a distância do ponto à superfície, permitindo tolerância de clique.
-- **Ser selecionado visualmente**: `render_selection` desenha um anel ao redor quando o corpo é a seleção atual.
+## Treinamento (opcional)
 
-O `MassObject` **não** integra a si mesmo. A integração é responsabilidade externa, o que permite trocar de método numérico sem tocar no corpo.
+O foguete pode ser treinado por um algoritmo genético sobre redes
+`ActorCritic`. Houve um primeiro treinamento multitarefa capaz de treinar a desacoplar-se 
+dos corpos onde está estacionada e atingir uma órbita-alvo com excelente maestria, nos `Resultados`
+você pode ver os resultados.
 
----
+Seguindo com a tentativa de ampliarmos o escopo, tentamos dividir o treinamento
+em 4 fases:
 
-## Interação e visualização
+| Fase             | Meta                                               |
+|------------------|----------------------------------------------------|
+| 1 — Desacoplagem | Sair da superfície com segurança                   |
+| 2 — Órbita maior | Atingir e manter órbita circular com r > r_inicial |
+| 3 — Órbita Menor | Atingir e manter órbita circular com r < r_inicial |
+| 4 — Acoplagem    | Estacionar em uma superfície com segurança         |
 
-A experiência do usuário é construída em torno de três gestos:
+Cada fase deve reutilizar os resultados da anterior, possuir uma função de recompensa 
+específica, apresentar logs inteligentes para posterior debugação. 
 
-**Clique esquerdo** seleciona um corpo. A seleção passa pelo `EntityPicker`, que primeiro tenta um hit direto (o clique está dentro de algum disco?) e, se ninguém for encontrado, considera uma tolerância em pixels (convertida para unidades de mundo pelo zoom), escolhendo o corpo mais próximo. Isso resolve o caso de corpos pequenos ou rápidos que seriam quase impossíveis de acertar. O corpo selecionado ganha um **anel branco** desenhado em `render_selection`.
+```bash
+python -m src.train --phase 1     # treina do zero
+python -m src.train --phase 2     # fine-tuning da Fase 1
+```
 
-**Clique direito** sobre um segundo corpo, com o primeiro já selecionado, define uma **referência orbital**. O corpo de referência ganha um **anel laranja**, e o `InspectorHUD` passa a exibir, em laranja, as propriedades relativas — distância, velocidade relativa, excentricidade, tipo de órbita, semi-eixo maior e Δv de escape. A ideia é poder ler a órbita inteira num relance.
+Até o presente momento, não conseguimos avançar com essas divisões e nos encontramos
+travados na fase 2, pois as redes, mesmo após diversos refinamentos, não apresentaram
+comportamentos interessantes dignos de avançarmos.
 
-**Teclas de alternância** ativam camadas de visualização:
+## Estrutura
 
-- **F** liga/desliga o vetor de força resultante em cada corpo (usando o `last_force` calculado pelo integrador).
-- **T** liga/desliga a previsão de trajetória futura, que roda uma simulação paralela a partir do estado atual e desenha as polilinhas que cada corpo vai seguir.
+```
+src/
+├── main.py                 # Simulação interativa (entry point)
+├── train.py                # Entry point de treinamento
+├── config.py               # Parâmetros de janela e física
+├── physics/                # RK4, gravidade, colisão, órbitas relativas
+├── entities/               # Rocket, MassObject, Entity, Picker
+├── engine/                 # Loop, câmera, renderer, HUD, visualizadores
+├── control/                # Entrada de teclado e mouse
+└── ai/                     # Redes, população e treinadores por fase
+```
 
-O HUD ainda exibe, no canto inferior, o tempo do último passo físico (em ms) e, quando a previsão está ligada, o tempo total gasto na previsão.
+## Monitoramento de memória (opcional)
 
----
+```bash
+python -m src.main --monitor-memory
+python src/assets/mem_report.py mem_dumps/ --save fig.png
+```
 
-## Previsão de trajetória
+## Resultados
 
-O `TrajectoryVisualizer` é a peça mais interessante do ponto de vista de design, porque faz um monte de coisas ao mesmo tempo e cada uma tem um motivo:
+Segue uma coleção de imagem para descrever como está o sistema.
 
-- **Estado temporário**: a previsão nunca toca nos corpos reais. Ela copia posição, velocidade, massa e raio para listas planas de floats e integra ali mesmo, com o mesmo esquema semi-implícito da simulação.
-- **Culling**: corpos fora da câmera continuam sendo integrados — a gravidade deles afeta os demais — mas a trajetória deles não é acumulada nem desenhada, economizando uma transformação de tela e um par de floats por passo.
-- **Parada em colisão**: a predição interrompe no primeiro passo em que qualquer par entra no raio de colisão. A simulação real funde os corpos nesse ponto, então prever adiante seria fisicamente inútil (a trajetória atravessaria a colisão) e visualmente confuso.
-- **Desenho em polilinha**: uma chamada de `pygame.draw.lines` por corpo em vez de uma `draw.line` por segmento. Reduz de `steps × count` chamadas para `count`.
+|                     Sem IA                     |                    Com IA                     |                     Com IA + Rótulos                      |
+|:----------------------------------------------:|:---------------------------------------------:|:---------------------------------------------------------:|
+| <img src="figs/system_ai_off.png" width="300"> | <img src="figs/system_ai_on.png" width="300"> | <img src="figs/system_ai_on_with_labels.png" width="300"> |
+|                    *Manual*                    |                  *Autônomo*                   |                        *Detalhado*                        |
 
----
-
-## Princípios de design que guiaram o projeto
-
-Ao longo do desenvolvimento, algumas decisões se repetiram e viraram o "estilo" do código:
-
-**Separação estrita de camadas.** `MassObject` não sabe integrar. `NewtonianGravity` não sabe desenhar. `World` não sabe física. `EntityPicker` não sabe onde os corpos estão. Cada peça tem uma responsabilidade e a delegação é explícita.
-
-**Inversão via registros, quando faz sentido.** O `Inspector` não conhece `MassObject`. Quem sabe quais propriedades existem é o `main.py`, que as registra num dicionário indexado por tipo. Isso permite adicionar ou remover propriedades sem tocar no inspector, e reaproveitar o mesmo inspector em outras cenas com outros tipos de entidade.
-
-**Ciclo de vida explícito.** `destroy()` é idempotente e dispara um hook `on_destroy`, o que permite que subclasses façam limpeza própria sem duplicar a lógica de estado. A `World` purga inativos em um único ponto, no fim do passo físico, evitando mutação durante iteração.
-
-**Configuração separada de política.** `Configs` descreve a janela e o loop; `SimulationConfig` descreve o mundo e a física. Trocar a simulação significa trocar a instância de `SimulationConfig`, não reescrever código.
-
-**Documentação como parte do código.** Toda função pública tem docstring. Comentários só aparecem onde registram uma decisão não óbvia — por que um determinado default foi escolhido, por que uma ordem de operação importa, por que um caso degenerado é tratado de determinada forma.

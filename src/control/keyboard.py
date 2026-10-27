@@ -2,9 +2,9 @@ import pygame
 
 
 class Input:
-    """Estado de teclado e mouse a partir dos eventos do Pygame.
+    """@brief Estado de teclado e mouse a partir dos eventos do Pygame.
 
-    Três categorias de estado, com semânticas distintas:
+    @details Três categorias de estado, com semânticas distintas:
 
     - `_keys_down`: pressionadas agora; persiste entre frames.
     - `_keys_pressed`: pressionadas neste frame; limpo em `update`.
@@ -19,7 +19,7 @@ class Input:
     DRAG_THRESHOLD_SQ = 25  # ~5 px
 
     def __init__(self) -> None:
-        """Inicializa os conjuntos de estado e zera o pedido de quit."""
+        """@brief Inicializa os conjuntos de estado e zera o pedido de quit."""
         self._keys_down: set[int] = set()
         self._keys_pressed: set[int] = set()
         self._keys_released: set[int] = set()
@@ -36,13 +36,21 @@ class Input:
         self.quit_requested = False
 
     def update(self) -> None:
-        """Limpa o estado de um frame, drena eventos e atualiza o mouse.
+        """@brief Limpa o estado de um frame, drena eventos e atualiza o mouse.
 
-        Deve ser chamada uma vez por iteração, antes de qualquer
-        consulta. `quit_requested` não é resetado automaticamente.
+        @details Deve ser chamada uma vez por iteração, antes de
+        qualquer consulta. `quit_requested` não é resetado
+        automaticamente — uma vez `True`, permanece `True` até o
+        chamador encerrar.
+
+        O `mouse_delta` é calculado por diferença entre o poll do topo
+        e a posição anterior; eventos `MOUSEBUTTONDOWN/UP` sobrescrevem
+        `mouse_position` com a posição do evento, que é mais precisa que
+        o poll.
         """
         previous_position = pygame.Vector2(self.mouse_position)
 
+        # Estado "deste frame" é limpo antes de processar os eventos.
         self._keys_pressed.clear()
         self._keys_released.clear()
         self._mouse_buttons_pressed.clear()
@@ -67,7 +75,9 @@ class Input:
                 self._keys_released.add(event.key)
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                # Botões 4/5 são a roda do mouse (scroll).
+                # Botões 4/5 são a roda do mouse (scroll). O Pygame
+                # não expõe `MOUSEWHEEL` em todas as versões/plataformas,
+                # então tratamos pelo `MOUSEBUTTONDOWN`.
                 if event.button == 4:
                     self.mouse_wheel += 1
                     continue
@@ -77,6 +87,8 @@ class Input:
 
                 self._mouse_buttons_pressed.add(event.button)
                 self._mouse_buttons_down.add(event.button)
+                # Guarda o ponto de partida para decidir clique vs arrasto
+                # no `MOUSEBUTTONUP`.
                 self._drag_start[event.button] = pygame.Vector2(event.pos)
                 # A posição do evento é mais precisa que o poll do topo.
                 self.mouse_position.update(event.pos)
@@ -88,45 +100,87 @@ class Input:
                 start = self._drag_start.pop(event.button, None)
                 if start is not None:
                     end = pygame.Vector2(event.pos)
+                    # Deslocamento ao quadrado: comparação sem sqrt,
+                    # coerente com `DRAG_THRESHOLD_SQ`.
                     if (end - start).length_squared() <= self.DRAG_THRESHOLD_SQ:
                         self._mouse_buttons_clicked.add(event.button)
 
     def is_down(self, key: int) -> bool:
-        """Indica se `key` está pressionada agora; persiste entre frames."""
+        """@brief Indica se `key` está pressionada agora.
+
+        @details Estado persistente entre frames.
+
+        @param key Código de tecla do Pygame (ex.: `pygame.K_SPACE`).
+        @return `True` se a tecla está atualmente pressionada.
+        """
         return key in self._keys_down
 
     def was_pressed(self, key: int) -> bool:
-        """Indica se `key` foi pressionada neste frame."""
+        """@brief Indica se `key` foi pressionada neste frame.
+
+        @param key Código de tecla do Pygame.
+        @return `True` se houve `KEYDOWN` de `key` neste frame.
+        """
         return key in self._keys_pressed
 
     def was_released(self, key: int) -> bool:
-        """Indica se `key` foi solta neste frame."""
+        """@brief Indica se `key` foi solta neste frame.
+
+        @param key Código de tecla do Pygame.
+        @return `True` se houve `KEYUP` de `key` neste frame.
+        """
         return key in self._keys_released
 
     def was_mouse_button_pressed(self, button: int) -> bool:
-        """Indica se o botão `button` foi pressionado neste frame.
+        """@brief Indica se o botão `button` foi pressionado neste frame.
 
-        Convenção do Pygame: 1 = esquerdo, 2 = meio, 3 = direito.
+        @details Convenção do Pygame: 1 = esquerdo, 2 = meio,
+        3 = direito.
+
+        @param button Código de botão do Pygame.
+        @return `True` se houve `MOUSEBUTTONDOWN` neste frame.
         """
         return button in self._mouse_buttons_pressed
 
     def is_mouse_button_down(self, button: int) -> bool:
-        """Indica se `button` está pressionado agora; persiste entre frames."""
+        """@brief Indica se `button` está pressionado agora.
+
+        @details Estado persistente entre frames.
+
+        @param button Código de botão do Pygame.
+        @return `True` se o botão está atualmente pressionado.
+        """
         return button in self._mouse_buttons_down
 
     def was_mouse_button_released(self, button: int) -> bool:
-        """Indica se `button` foi solto neste frame."""
+        """@brief Indica se `button` foi solto neste frame.
+
+        @param button Código de botão do Pygame.
+        @return `True` se houve `MOUSEBUTTONUP` neste frame.
+        """
         return button in self._mouse_buttons_released
 
     def was_mouse_button_clicked(self, button: int) -> bool:
-        """Indica se `button` foi pressionado e solto neste frame sem arrasto.
+        """@brief Indica se `button` foi pressionado e solto sem arrasto.
 
-        Arrastos acima de `DRAG_THRESHOLD_SQ` são classificados como pan,
-        não como clique, e por isso não disparam este predicado.
+        @details Arrastos acima de `DRAG_THRESHOLD_SQ` são
+        classificados como pan, não como clique, e por isso não
+        disparam este predicado. O clique é registrado no
+        `MOUSEBUTTONUP`, com base no deslocamento desde o
+        `MOUSEBUTTONDOWN` correspondente.
+
+        @param button Código de botão do Pygame.
+        @return `True` se houve clique neste frame.
         """
         return button in self._mouse_buttons_clicked
 
     @property
     def events(self) -> list[pygame.event.Event]:
-        """Eventos brutos do frame atual; não guarde entre frames."""
+        """@brief Eventos brutos do frame atual.
+
+        @details A lista é substituída em cada `update()`; não guarde
+        referências entre frames.
+
+        @return Lista de `pygame.event.Event` deste frame.
+        """
         return self._events

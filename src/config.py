@@ -76,11 +76,31 @@ class SimulationConfig:
     # Softening proporcional aos menores corpos (meteoros, raio 4–8).
     # Mantém a força finita quando duas formas pequenas se tocam, sem
     # interferir na dinâmica estelar (raios na casa das centenas).
-    gravitational_softening: float = 12.0
+    gravitational_softening: float = 0
 
     # Velocidade relativa mínima para fundir duas formas em contato.
     # Abaixo disso, a sobreposição é tratada como contato suave: é o
     # que permite o foguete repousar sobre um planeta sem ser absorvido.
-    merge_min_relative_speed: float = 12.0
+    merge_min_relative_speed: float = 120
+
+    # Velocidade relativa máxima entre o foguete e um corpo para que o
+    # contato seja interpretado como pouso. Deve ser igual a
+    # `merge_min_relative_speed` para que não exista faixa de
+    # velocidades em que o contato é silenciosamente ignorado (abaixo
+    # não funde, acima não pousa). Se um dia a política de impacto for
+    # refinada, este é o valor a ajustar.
+    landing_max_speed: float = 120
+
+    # Capacidade total do tanque do foguete, em unidades arbitrárias.
+    fuel_max: float = 2400.0
+
+    # Taxa de consumo durante empuxo contínuo, em unidades por segundo.
+    # Com dt = 1/120 e 120 u/s, cada passo de queima custa 1 unidade —
+    # exatamente o valor de DESIGN.md §4.
+    fuel_thrust_rate: float = 120.0
+
+    # Taxa de consumo durante rotação contínua, em unidades por segundo.
+    # Menor que a de empuxo: girar é mais barato que queimar.
+    fuel_rotation_rate: float = 30.0
 
     future_trajectory_steps: int = 2000

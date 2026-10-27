@@ -7,19 +7,19 @@ from src.engine.renderer import Renderer
 
 
 class Entity(ABC):
-    """
-    Base abstrata para os objetos da aplicação.
+    """@brief Base abstrata para os objetos da aplicação.
 
-    Subclasses devem implementar `update`, `fixed_update` e `render`.
-    O ciclo de vida (`active`) é gerenciado aqui.
+    @details Subclasses devem implementar `update`, `fixed_update` e
+    `render`. O ciclo de vida (`active`) é gerenciado aqui.
     """
 
     def __init__(
         self,
         position: pygame.Vector2 | None = None,
     ) -> None:
-        """
-        Inicializa posição, velocidade nula e estado ativo.
+        """@brief Inicializa posição, velocidade nula e estado ativo.
+
+        @param position Posição inicial em world_space; origem se None.
         """
         self.position = (
             pygame.Vector2(position)
@@ -32,14 +32,16 @@ class Entity(ABC):
 
     @abstractmethod
     def update(self, delta_time: float) -> None:
-        """
-        Atualização lógica por frame.
+        """@brief Atualização lógica por frame.
+
+        @param delta_time Tempo desde o último frame, em segundos.
         """
 
     @abstractmethod
     def fixed_update(self, fixed_delta_time: float) -> None:
-        """
-        Atualização física em timestep fixo.
+        """@brief Atualização física em timestep fixo.
+
+        @param fixed_delta_time Passo fixo em segundos.
         """
 
     @abstractmethod
@@ -49,16 +51,22 @@ class Entity(ABC):
             camera: Camera2D,
             alpha: float = 1.0,
     ) -> None:
-        """Desenha a entidade.
+        """@brief Desenha a entidade.
 
-        `alpha` é o fator de interpolação em [0, 1) entre o estado físico
-        anterior e o atual, útil quando a taxa de frames difere da de
-        passos fixos. Subclasses que não interpolam podem ignorá-lo.
+        @details `alpha` interpola entre o estado físico anterior e o
+        atual, útil quando a taxa de frames difere da de passos fixos.
+        Subclasses que não interpolam podem ignorá-lo.
+
+        @param renderer Renderizador alvo.
+        @param camera Câmera usada para world_space → screen_space.
+        @param alpha Fator de interpolação em [0, 1].
         """
 
     def destroy(self) -> None:
-        """
-        Marca a entidade como inativa e dispara `on_destroy`.
+        """@brief Marca a entidade como inativa e dispara `on_destroy`.
+
+        @details Idempotente: chamadas repetidas após a primeira não
+        disparam `on_destroy` novamente.
         """
         if not self.active:
             return
@@ -67,21 +75,22 @@ class Entity(ABC):
         self.on_destroy()
 
     def on_destroy(self) -> None:
-        """
-        Hook de limpeza opcional.
-        """
+        """@brief Hook de limpeza opcional, chamado por `destroy`."""
 
     def hit_test(
             self,
             world_position: pygame.Vector2,
             alpha: float = 1.0,
     ) -> bool:
-        """
-        Indica se um ponto do mundo pertence visualmente à entidade.
-        Entidades que podem ser selecionadas devem sobrescrever este method.
+        """@brief Indica se um ponto do mundo pertence visualmente à entidade.
 
-        Alguma entidade pode simplesmente não ser clicável, então vamos manter o não selecionável
-        e não deixar esse method abstrato.
+        @details Entidades clicáveis devem sobrescrever este método. O
+        default `False` permite entidades não selecionáveis sem que
+        precisem implementar nada.
+
+        @param world_position Ponto em world_space.
+        @param alpha Fator de interpolação em [0, 1].
+        @return `True` se o ponto pertence à entidade.
         """
         return False
 
@@ -94,10 +103,13 @@ class Entity(ABC):
              float,
              float,
          ] | None:
-        """
-        Retorna o bounding box da entidade em world_space.
+        """@brief Retorna o bounding box da entidade em world_space.
 
-        Entidades sem uma forma espacial definida podem retornar None.
+        @details Entidades sem forma espacial definida podem retornar
+        `None`.
+
+        @param alpha Fator de interpolação em [0, 1].
+        @return `(min_x, min_y, max_x, max_y)` ou `None`.
         """
         return None
 
@@ -106,8 +118,18 @@ class Entity(ABC):
             camera: Camera2D,
             alpha: float = 1.0,
     ) -> bool:
+        """@brief Indica se a entidade intersecta a região visível da câmera.
+
+        @details Sem `get_world_bounds`, não há como recortar — a
+        entidade é considerada visível por padrão.
+
+        @param camera Câmera com o viewport atual.
+        @param alpha Fator de interpolação em [0, 1].
+        @return `True` se a entidade deve ser desenhada.
+        """
         bounds = self.get_world_bounds(alpha)
 
+        # Sem forma espacial conhecida, não há recorte a aplicar.
         if bounds is None:
             return True
 
@@ -118,26 +140,35 @@ class Entity(ABC):
             world_position: pygame.Vector2,
             alpha: float = 1.0,
     ) -> float:
-        """Distância do ponto à superfície clicável da entidade.
+        """@brief Distância do ponto à superfície clicável da entidade.
 
-        Retorna `0.0` se o ponto está dentro da forma, valor positivo se
-        está fora, e `float("inf")` se a entidade não tem forma espacial
-        bem definida — nesse caso ela só responde a `hit_test` direto, não
-        à tolerância de clique.
+        @details Retorna `0.0` se o ponto está dentro da forma, valor
+        positivo se está fora, e `float("inf")` se a entidade não tem
+        forma espacial bem definida — nesse caso ela só responde a
+        `hit_test` direto, não à tolerância de clique.
+
+        @param world_position Ponto em world_space.
+        @param alpha Fator de interpolação em [0, 1].
+        @return Distância à superfície clicável, ou `inf` sem forma.
         """
+        # `inf` desabilita a fase de tolerância do `EntityPicker`.
         return float("inf")
 
     def collision_circles(
             self,
             alpha: float = 1.0,
     ) -> tuple[tuple[pygame.Vector2, float], ...]:
-        """Círculos em world_space que compõem a forma de colisão.
+        """@brief Círculos em world_space que compõem a forma de colisão.
 
-        Retorna uma tupla de pares `(centro, raio)`. `alpha` é o fator
-        de interpolação entre o estado físico anterior e o atual,
-        coerente com o que `render` desenha. Entidades sem forma
-        colidível devolvem tupla vazia.
+        @details Tupla de pares `(centro, raio)`. `alpha` interpola
+        entre o estado físico anterior e o atual, coerente com o que
+        `render` desenha. Entidades sem forma colidível devolvem tupla
+        vazia.
+
+        @param alpha Fator de interpolação em [0, 1].
+        @return Tupla de `(centro, raio)` em world_space.
         """
+        # Tupla vazia: nenhum par de círculos colide.
         return ()
 
     def render_selection(
@@ -146,17 +177,22 @@ class Entity(ABC):
             camera: Camera2D,
             alpha: float = 1.0,
     ) -> None:
-        """Desenha um realce visual indicando que a entidade está selecionada.
+        """@brief Desenha um realce visual de seleção.
 
-        No-op por padrão. Subclasses com forma espacial sobrescrevem para
-        desenhar algo em volta (anel, caixa, contorno). A `Application`
-        chama este method no `render` quando a entidade é a selecionada.
+        @details No-op por padrão. Subclasses com forma espacial
+        sobrescrevem para desenhar algo em volta (anel, caixa,
+        contorno). A `Application` chama este método no `render` quando
+        a entidade é a selecionada.
+
+        @param renderer Renderizador alvo.
+        @param camera Câmera usada para world_space → screen_space.
+        @param alpha Fator de interpolação em [0, 1].
         """
 
     def post_integrate(self) -> None:
-        """Hook chamado após o passo de integração, no timestep fixo.
+        """@brief Hook chamado após o passo de integração, no timestep fixo.
 
-        A integração (RK4) escreve diretamente em `position` e
+        @details A integração (RK4) escreve diretamente em `position` e
         `velocity` dos corpos, ignorando qualquer lógica de subclasse.
         Entidades que precisam reajustar o próprio estado depois da
         integração — como um foguete acoplado, cuja posição deve
